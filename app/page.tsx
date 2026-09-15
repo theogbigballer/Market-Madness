@@ -1,25 +1,80 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-const positions = [
-  { symbol: "NVDA", name: "NVIDIA Corp.", type: "Equity", qty: "1,250", mark: "$184.92", value: "$231,150", pnl: "+$8,437", pct: "+3.79%", tone: "positive" },
-  { symbol: "BTC-USD", name: "Bitcoin", type: "Crypto", qty: "2.40", mark: "$116,842", value: "$280,421", pnl: "+$4,926", pct: "+1.79%", tone: "positive" },
-  { symbol: "ESZ6", name: "E-mini S&P 500 Dec 26", type: "Future", qty: "-2", mark: "6,742.25", value: "-$674,225", pnl: "-$2,175", pct: "-0.32%", tone: "negative" },
-  { symbol: "SPY 700C", name: "17 Dec 2026 · Call", type: "Option", qty: "10", mark: "$14.28", value: "$14,280", pnl: "+$1,840", pct: "+14.79%", tone: "positive" },
-];
+type Portfolio = { id: string; name: string; startingCapital: number; benchmarkSymbol: string; advancedDerivativesEnabled: boolean; theme: string };
+type Quote = { bid?: string; ask?: string; last?: string; mark: string; provider: string; quality: string; observedAt: string; name?: string };
+type Position = { symbol: string; name: string; assetClass: string; quantity: number; mark: number; averageCost: number; marketValue: number; unrealizedPnl: number; quote: Quote };
+type Order = { id: string; symbol: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; scheduled_for: string | null; created_at: string };
+type Dashboard = {
+  portfolio: Portfolio;
+  account: { cash: number; marketValue: number; netLiquidationValue: number; totalPnl: number; totalReturn: number; buyingPower: number; grossExposure: number; maintenanceMargin: number; marginUtilization: number };
+  positions: Position[]; orders: Order[];
+  session: { isOpen: boolean; closesAt: string; nextOpenAt: string };
+  quoteStatus: { provider: string; quality: string; refreshedAt: string };
+};
 
-const sparkBars = [28, 31, 29, 37, 34, 40, 43, 39, 46, 49, 47, 55, 52, 61, 59, 67, 65, 73, 70, 76, 79, 84, 81, 88, 92, 89, 96];
+const navigation = ["Overview", "Trade", "Positions", "Markets", "Orders", "P&L", "Risk", "Allocation", "Activity"];
+const marketSymbols = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
+const sparkBars = [28,31,29,37,34,40,43,39,46,49,47,55,52,61,59,67,65,73,70,76,79,84,81,88,92,89,96];
+const assetMap: Record<string, "equity" | "crypto"> = { Equity: "equity", Crypto: "crypto" };
+
+function money(value: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value); }
+function number(value: number, digits = 2) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value); }
+function signedMoney(value: number) { return `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`; }
+function pct(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`; }
 
 export default function Home() {
   const [dark, setDark] = useState(true);
   const [active, setActive] = useState("Overview");
+  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
+  const [portfolioId, setPortfolioId] = useState("");
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
   const [tradeOpen, setTradeOpen] = useState(false);
-  const [assetClass, setAssetClass] = useState("Equity");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
 
+  const loadPortfolios = useCallback(async () => {
+    const response = await fetch("/api/portfolios");
+    const payload = await response.json() as { portfolios?: Portfolio[]; error?: string };
+    if (!response.ok) throw new Error(payload.error || "Unable to load portfolios.");
+    setPortfolios(payload.portfolios || []);
+    if (!portfolioId && payload.portfolios?.length) setPortfolioId(payload.portfolios[0].id);
+    if (!payload.portfolios?.length) setCreateOpen(true);
+  }, [portfolioId]);
+
+  const refreshDashboard = useCallback(async () => {
+    if (!portfolioId) return;
+    const response = await fetch(`/api/dashboard?portfolioId=${encodeURIComponent(portfolioId)}`);
+    const payload = await response.json() as Dashboard & { error?: string };
+    if (!response.ok) throw new Error(payload.error || "Unable to load portfolio.");
+    setDashboard(payload);
+  }, [portfolioId]);
+
+  useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; }, [dark]);
+  useEffect(() => { const timer = window.setTimeout(() => loadPortfolios().catch((reason) => setError(reason.message)).finally(() => setLoading(false)), 0); return () => window.clearTimeout(timer); }, [loadPortfolios]);
   useEffect(() => {
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
-  }, [dark]);
+    const initial = window.setTimeout(() => refreshDashboard().catch((reason) => setError(reason.message)), 0);
+    const interval = window.setInterval(() => refreshDashboard().catch(() => undefined), 30_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
+  }, [refreshDashboard]);
+
+  const allocation = useMemo(() => {
+    if (!dashboard?.positions.length) return [];
+    const total = dashboard.positions.reduce((sum, position) => sum + Math.abs(position.marketValue), 0);
+    const totals = new Map<string, number>();
+    dashboard.positions.forEach((position) => totals.set(position.assetClass, (totals.get(position.assetClass) || 0) + Math.abs(position.marketValue)));
+    return [...totals].map(([label, value]) => ({ label, value: total ? value / total : 0 }));
+  }, [dashboard]);
+
+  async function portfolioCreated(id: string) {
+    setCreateOpen(false); setPortfolioId(id); setNotice("Portfolio created. Your opening cash entry is now in the ledger.");
+    await loadPortfolios();
+  }
+
+  const selectedPortfolio = portfolios.find((portfolio) => portfolio.id === portfolioId);
 
   return (
     <main className="app-shell">
@@ -27,76 +82,103 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">MM</span><span>Market Madness</span></div>
         <nav aria-label="Primary navigation">
           <p className="nav-label">Workspace</p>
-          {["Overview", "Trade", "Positions", "Markets", "Orders", "P&L", "Risk", "Allocation", "Activity"].map((item) => (
-            <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => setActive(item)}><span className="nav-dot" />{item}</button>
-          ))}
+          {navigation.map((item) => <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => { setActive(item); if (item === "Trade") setTradeOpen(true); }}><span className="nav-dot" />{item}</button>)}
           <p className="nav-label secondary-label">System</p>
-          <button className="nav-item"><span className="nav-dot" />Data providers</button>
-          <button className="nav-item"><span className="nav-dot" />Settings</button>
+          <button className="nav-item"><span className="nav-dot" />Data providers</button><button className="nav-item"><span className="nav-dot" />Settings</button>
         </nav>
-        <div className="feed-card"><div><span className="status-dot" /> Market data</div><strong>Connected</strong><span>Updated 8 sec ago</span></div>
+        <div className="feed-card"><div><span className="status-dot simulated" /> Market data</div><strong>{dashboard?.quoteStatus.quality || "Starting"}</strong><span>{dashboard ? `Updated ${new Date(dashboard.quoteStatus.refreshedAt).toLocaleTimeString()}` : "Waiting for portfolio"}</span></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div className="portfolio-switcher"><span className="eyebrow">Portfolio</span><button>Core Opportunities <span>⌄</span></button></div>
+          <div className="portfolio-switcher"><span className="eyebrow">Portfolio</span><div><select aria-label="Selected portfolio" value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><button className="add-portfolio" onClick={() => setCreateOpen(true)} aria-label="Create portfolio">＋</button></div></div>
           <div className="topbar-actions">
-            <div className="market-clock"><span className="status-dot" /><span><strong>US markets open</strong><small>Closes in 3h 42m</small></span></div>
+            <div className="market-clock"><span className={`status-dot ${dashboard?.session.isOpen ? "" : "closed"}`} /><span><strong>{dashboard?.session.isOpen ? "US markets open" : "US markets closed"}</strong><small>{dashboard?.session.isOpen ? `Closes ${new Date(dashboard.session.closesAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : dashboard ? `Next open ${new Date(dashboard.session.nextOpenAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "Checking calendar"}</small></span></div>
             <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "◐"}</button>
-            <button className="trade-button" onClick={() => setTradeOpen(true)}>Place trade</button>
+            <button className="trade-button" disabled={!portfolioId} onClick={() => setTradeOpen(true)}>Place trade</button>
           </div>
         </header>
 
         <div className="content">
-          <div className="page-heading">
-            <div><p className="eyebrow">Monday, September 14</p><h1>{active === "Overview" ? "Portfolio overview" : active}</h1></div>
-            <div className="benchmark">Benchmark <strong>SPY</strong><span className="positive">+0.42%</span></div>
-          </div>
+          {notice && <div className="notice-banner"><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss notice">×</button></div>}
+          {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
+          <div className="page-heading"><div><p className="eyebrow">{new Date().toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" })}</p><h1>{active === "Overview" ? "Portfolio overview" : active}</h1></div>{dashboard && <div className="benchmark">Benchmark <strong>{dashboard.portfolio.benchmarkSymbol}</strong><span>Selected</span></div>}</div>
 
-          <section className="metrics-grid" aria-label="Portfolio summary">
-            <article className="metric primary-metric"><span>Net liquidation value</span><strong>$512,846.20</strong><small className="positive">+$7,942.18 today · +1.57%</small></article>
-            <article className="metric"><span>Available buying power</span><strong>$294,108.74</strong><small>57.35% of equity</small></article>
-            <article className="metric"><span>Cash balance</span><strong>$126,302.41</strong><small>24.63% allocation</small></article>
-            <article className="metric"><span>Margin utilization</span><strong>38.6%</strong><div className="meter"><i /></div><small>$74,392 excess liquidity</small></article>
-          </section>
-
-          <section className="dashboard-grid">
-            <article className="panel performance-panel">
-              <div className="panel-head"><div><span className="panel-title">Portfolio performance</span><p>Net value versus SPY benchmark</p></div><div className="range"><button>1D</button><button>1W</button><button className="selected">1M</button><button>YTD</button><button>1Y</button></div></div>
-              <div className="chart-values"><div><span>Portfolio</span><strong className="positive">+6.84%</strong></div><div><span>SPY</span><strong>+3.21%</strong></div></div>
-              <div className="chart" aria-label="Portfolio equity chart"><div className="gridline g1"/><div className="gridline g2"/><div className="gridline g3"/><div className="spark-bars">{sparkBars.map((height, index) => <i key={index} style={{height: `${height}%`}} />)}</div><div className="chart-axis"><span>Aug 14</span><span>Aug 24</span><span>Sep 03</span><span>Sep 14</span></div></div>
-            </article>
-
-            <article className="panel exposure-panel">
-              <div className="panel-head"><div><span className="panel-title">Net exposure</span><p>By asset class</p></div><button className="icon-button">•••</button></div>
-              <div className="exposure-total"><strong>$486,972</strong><span>94.95% invested</span></div>
-              <div className="allocation-bar"><i className="equity"/><i className="crypto"/><i className="futures"/><i className="options"/><i className="cash"/></div>
-              <div className="legend">
-                <div><span><i className="swatch equity"/>Equity</span><strong>44.1%</strong></div><div><span><i className="swatch crypto"/>Crypto</span><strong>24.7%</strong></div><div><span><i className="swatch futures"/>Futures</span><strong>13.8%</strong></div><div><span><i className="swatch options"/>Options</span><strong>12.4%</strong></div><div><span><i className="swatch cash"/>Cash</span><strong>5.0%</strong></div>
-              </div>
-            </article>
-          </section>
-
-          <section className="panel positions-panel">
-            <div className="panel-head"><div><span className="panel-title">Open positions</span><p>Live marks refresh every 30 seconds</p></div><button className="text-button">View all positions →</button></div>
-            <div className="table-wrap"><table><thead><tr><th>Instrument</th><th>Type</th><th className="number">Quantity</th><th className="number">Mark</th><th className="number">Market value</th><th className="number">Today&apos;s P&amp;L</th></tr></thead><tbody>{positions.map((position) => <tr key={position.symbol}><td><strong>{position.symbol}</strong><small>{position.name}</small></td><td><span className="type-pill">{position.type}</span></td><td className="number">{position.qty}</td><td className="number">{position.mark}</td><td className="number">{position.value}</td><td className={`number ${position.tone}`}><strong>{position.pnl}</strong><small>{position.pct}</small></td></tr>)}</tbody></table></div>
-          </section>
+          {loading && <section className="empty-panel">Opening your local portfolio ledger…</section>}
+          {!loading && !portfolioId && <section className="empty-panel"><strong>Create your first portfolio</strong><p>Choose your capital and benchmark to begin trading current markets.</p><button className="trade-button" onClick={() => setCreateOpen(true)}>Create portfolio</button></section>}
+          {dashboard && active === "Overview" && <Overview dashboard={dashboard} allocation={allocation} />}
+          {dashboard && active === "Positions" && <PositionsTable positions={dashboard.positions} expanded />}
+          {dashboard && active === "Orders" && <OrdersTable orders={dashboard.orders} />}
+          {dashboard && active === "Markets" && <MarketsPanel />}
+          {dashboard && !["Overview", "Positions", "Orders", "Markets", "Trade"].includes(active) && <ModulePanel title={active} />}
         </div>
       </section>
-      {tradeOpen && <div className="drawer-backdrop">
-        <button className="drawer-dismiss" onClick={() => setTradeOpen(false)} aria-label="Close trade ticket overlay" />
-        <aside className="trade-drawer" aria-label="Trade ticket">
-          <div className="drawer-head"><div><p className="eyebrow">Core Opportunities</p><h2>New order</h2></div><button onClick={() => setTradeOpen(false)} aria-label="Close trade ticket">×</button></div>
-          <div className="asset-tabs">{["Equity", "Crypto", "Futures", "Options", "Forward"].map((item) => <button key={item} className={assetClass === item ? "selected" : ""} onClick={() => setAssetClass(item)}>{item}</button>)}</div>
-          <label>Instrument<input defaultValue={assetClass === "Equity" ? "NVDA" : ""} placeholder={`Search ${assetClass.toLowerCase()} instruments`} /></label>
-          <div className="quote-strip"><span>Bid<strong>$184.90</strong></span><span>Ask<strong>$184.94</strong></span><span>Mark<strong>$184.92</strong></span><span>Quality<strong className="positive">Live</strong></span></div>
-          <div className="field-row"><label>Side<select defaultValue="buy"><option value="buy">Buy</option><option value="sell">Sell</option></select></label><label>Order type<select defaultValue="market"><option value="market">Market</option><option value="limit">Limit</option><option value="stop">Stop</option><option value="stop_limit">Stop limit</option></select></label></div>
-          <div className="field-row"><label>Quantity<input type="number" min="0" defaultValue="100" /></label><label>Time in force<select defaultValue="day"><option value="day">Day</option><option value="gtc">Good til canceled</option></select></label></div>
-          <div className="estimate-card"><div><span>Estimated fill</span><strong>$184.96</strong></div><div><span>Estimated slippage</span><strong>$4.00</strong></div><div><span>Buying power after</span><strong>$275,612.74</strong></div><p><span className="status-dot" /> Eligible for immediate execution during the regular session.</p></div>
-          <button className="review-button">Review order</button>
-          <p className="ticket-note">Scaffold preview · Orders are not submitted until the execution engine is connected.</p>
-        </aside>
-      </div>}
+
+      {createOpen && <PortfolioDialog dark={dark} onClose={portfolios.length ? () => setCreateOpen(false) : undefined} onCreated={portfolioCreated} onError={setError} />}
+      {tradeOpen && dashboard && <TradeDrawer portfolio={selectedPortfolio || dashboard.portfolio} dashboard={dashboard} onClose={() => setTradeOpen(false)} onComplete={async (message) => { setNotice(message); setTradeOpen(false); setActive("Overview"); await refreshDashboard(); }} onError={setError} />}
     </main>
   );
+}
+
+function Overview({ dashboard, allocation }: { dashboard: Dashboard; allocation: { label: string; value: number }[] }) {
+  const { account } = dashboard;
+  return <>
+    <section className="metrics-grid" aria-label="Portfolio summary">
+      <article className="metric primary-metric"><span>Net liquidation value</span><strong>{money(account.netLiquidationValue)}</strong><small className={account.totalPnl >= 0 ? "positive" : "negative"}>{signedMoney(account.totalPnl)} since inception · {pct(account.totalReturn)}</small></article>
+      <article className="metric"><span>Available buying power</span><strong>{money(account.buyingPower)}</strong><small>Orders require sufficient buying power</small></article>
+      <article className="metric"><span>Cash balance</span><strong>{money(account.cash)}</strong><small>{account.netLiquidationValue ? `${number(account.cash / account.netLiquidationValue * 100)}% of equity` : "Opening balance"}</small></article>
+      <article className="metric"><span>Margin utilization</span><strong>{number(account.marginUtilization * 100)}%</strong><div className="meter"><i style={{ width: `${Math.min(100, account.marginUtilization * 100)}%` }} /></div><small>{money(Math.max(0, account.netLiquidationValue * .25 - account.maintenanceMargin))} excess buffer</small></article>
+    </section>
+    <section className="dashboard-grid">
+      <article className="panel performance-panel"><div className="panel-head"><div><span className="panel-title">Portfolio performance</span><p>Live ledger value since portfolio creation</p></div><div className="range"><button className="selected">Live</button></div></div><div className="chart-values"><div><span>Portfolio</span><strong className={account.totalReturn >= 0 ? "positive" : "negative"}>{pct(account.totalReturn)}</strong></div><div><span>Unrealized P&amp;L</span><strong>{signedMoney(dashboard.positions.reduce((sum, position) => sum + position.unrealizedPnl, 0))}</strong></div></div><div className="chart" aria-label="Portfolio equity chart"><div className="gridline g1"/><div className="gridline g2"/><div className="gridline g3"/><div className="spark-bars">{sparkBars.map((height, index) => <i key={index} style={{ height: `${dashboard.positions.length ? height : 34}%` }} />)}</div><div className="chart-axis"><span>Opened</span><span>Current session</span><span>Now</span></div></div></article>
+      <article className="panel exposure-panel"><div className="panel-head"><div><span className="panel-title">Gross exposure</span><p>By asset class</p></div></div><div className="exposure-total"><strong>{money(account.grossExposure)}</strong><span>{account.netLiquidationValue ? `${number(account.grossExposure / account.netLiquidationValue * 100)}% of equity` : "No exposure"}</span></div><div className="allocation-bar">{allocation.length ? allocation.map((item) => <i key={item.label} className={item.label} style={{ width: `${item.value * 100}%` }} />) : <i className="cash" style={{ width: "100%" }} />}</div><div className="legend">{allocation.length ? allocation.map((item) => <div key={item.label}><span><i className={`swatch ${item.label}`}/>{item.label}</span><strong>{number(item.value * 100)}%</strong></div>) : <div><span><i className="swatch cash"/>Cash</span><strong>100%</strong></div>}</div></article>
+    </section>
+    <PositionsTable positions={dashboard.positions} />
+  </>;
+}
+
+function PositionsTable({ positions, expanded = false }: { positions: Position[]; expanded?: boolean }) {
+  return <section className={`panel positions-panel ${expanded ? "standalone-panel" : ""}`}><div className="panel-head"><div><span className="panel-title">Open positions</span><p>Marks refresh every 30 seconds with source and quality attached</p></div><span className="quality-badge">Simulated</span></div>{positions.length ? <div className="table-wrap"><table><thead><tr><th>Instrument</th><th>Type</th><th className="number">Quantity</th><th className="number">Avg. cost</th><th className="number">Mark</th><th className="number">Market value</th><th className="number">Unrealized P&amp;L</th></tr></thead><tbody>{positions.map((position) => <tr key={`${position.assetClass}:${position.symbol}`}><td><strong>{position.symbol}</strong><small>{position.name}</small></td><td><span className="type-pill">{position.assetClass}</span></td><td className="number">{number(position.quantity, 6)}</td><td className="number">{money(position.averageCost)}</td><td className="number">{money(position.mark)}<small>{position.quote.quality}</small></td><td className="number">{money(position.marketValue)}</td><td className={`number ${position.unrealizedPnl >= 0 ? "positive" : "negative"}`}><strong>{signedMoney(position.unrealizedPnl)}</strong></td></tr>)}</tbody></table></div> : <div className="panel-empty"><strong>No open positions</strong><span>Your first fill will appear here with its live mark and cost basis.</span></div>}</section>;
+}
+
+function OrdersTable({ orders }: { orders: Order[] }) {
+  return <section className="panel positions-panel standalone-panel"><div className="panel-head"><div><span className="panel-title">Order activity</span><p>Scheduled equity orders remain cancelable until the next regular session</p></div></div>{orders.length ? <div className="table-wrap"><table><thead><tr><th>Instrument</th><th>Side</th><th>Type</th><th>Status</th><th className="number">Quantity</th><th className="number">Submitted</th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong>{order.symbol}</strong></td><td>{order.side}</td><td>{order.order_type}</td><td><span className={`status-pill ${order.status}`}>{order.status.replace("_", " ")}</span>{order.scheduled_for && <small>Activates {new Date(order.scheduled_for).toLocaleString()}</small>}</td><td className="number">{order.quantity}</td><td className="number">{new Date(order.created_at).toLocaleString()}</td></tr>)}</tbody></table></div> : <div className="panel-empty"><strong>No orders yet</strong><span>Submitted and queued orders will appear here.</span></div>}</section>;
+}
+
+function MarketsPanel() {
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  useEffect(() => { Promise.all(marketSymbols.map((symbol) => fetch(`/api/quotes?symbol=${symbol}`).then((response) => response.json()))).then(setQuotes).catch(() => undefined); }, []);
+  return <section className="market-grid">{quotes.map((quote, index) => <article className="market-card" key={marketSymbols[index]}><div><strong>{marketSymbols[index]}</strong><span className="quality-badge">{quote.quality}</span></div><h3>{money(Number(quote.mark))}</h3><p>Bid {money(Number(quote.bid))} · Ask {money(Number(quote.ask))}</p><small>{quote.provider}</small></article>)}</section>;
+}
+
+function ModulePanel({ title }: { title: string }) {
+  const descriptions: Record<string, string> = { "P&L": "Daily and cumulative attribution will reconcile to the immutable ledger.", Risk: "Margin, concentration, Greeks, and scenario shocks will live here.", Allocation: "Targets, drift, cash reserve, and rebalance analysis will live here.", Activity: "Every fill, cash flow, settlement, exercise, and liquidation will be auditable here." };
+  return <section className="empty-panel"><span className="eyebrow">Module scaffold</span><strong>{title}</strong><p>{descriptions[title] || "This module is ready for its next implementation pass."}</p></section>;
+}
+
+function PortfolioDialog({ dark, onClose, onCreated, onError }: { dark: boolean; onClose?: () => void; onCreated: (id: string) => void; onError: (message: string) => void }) {
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true);
+    const form = new FormData(event.currentTarget);
+    const response = await fetch("/api/portfolios", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: form.get("name"), startingCapital: Number(form.get("capital")), benchmarkSymbol: form.get("benchmark"), advancedDerivativesEnabled: form.get("advanced") === "on", theme: dark ? "dark" : "light" }) });
+    const payload = await response.json() as { id?: string; error?: string };
+    setSaving(false); if (!response.ok || !payload.id) return onError(payload.error || "Unable to create portfolio.");
+    await onCreated(payload.id);
+  }
+  return <div className="modal-backdrop"><section className="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="portfolio-title"><div className="onboarding-copy"><span className="brand-mark">MM</span><p className="eyebrow">Portfolio setup</p><h2 id="portfolio-title">Build your trading book</h2><p>Start with real accounting, explicit data quality, and the risk controls we defined.</p><ul><li>USD base currency</li><li>Current markets only</li><li>Immediate margin liquidation</li><li>No equity after-hours execution</li></ul></div><form onSubmit={submit}><label>Portfolio name<input name="name" required defaultValue="Core Opportunities" /></label><label>Starting capital<input name="capital" type="number" required min="1000" step="100" defaultValue="500000" /><small>$1,000 minimum · $500,000 suggested</small></label><label>Primary benchmark<select name="benchmark" defaultValue="SPY"><option>SPY</option><option>QQQ</option><option>BTC-USD</option><option>Cash</option></select></label><div className="check-label"><input id="advanced-derivatives" name="advanced" type="checkbox"/><label htmlFor="advanced-derivatives"><strong>Enable Advanced Derivatives</strong><small>Required later for uncovered short options.</small></label></div><div className="dialog-actions">{onClose && <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>}<button className="trade-button" disabled={saving}>{saving ? "Creating…" : "Create portfolio"}</button></div></form></section></div>;
+}
+
+function TradeDrawer({ portfolio, dashboard, onClose, onComplete, onError }: { portfolio: Portfolio; dashboard: Dashboard; onClose: () => void; onComplete: (message: string) => void; onError: (message: string) => void }) {
+  const [assetClass, setAssetClass] = useState("Equity"), [symbol, setSymbol] = useState("NVDA"), [side, setSide] = useState<"buy" | "sell">("buy"), [orderType, setOrderType] = useState<"market" | "limit">("market"), [quantity, setQuantity] = useState(100), [limitPrice, setLimitPrice] = useState(""), [quote, setQuote] = useState<Quote | null>(null), [submitting, setSubmitting] = useState(false);
+  useEffect(() => { const timer = window.setTimeout(() => fetch(`/api/quotes?symbol=${encodeURIComponent(symbol)}&assetClass=${assetMap[assetClass]}`).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error); setQuote(payload); }).catch((reason) => { setQuote(null); if (symbol.length > 1) onError(reason.message); }), 250); return () => window.clearTimeout(timer); }, [assetClass, symbol, onError]);
+  const estimatedPrice = quote ? Number(side === "buy" ? quote.ask : quote.bid) : 0, estimatedNotional = estimatedPrice * quantity;
+  async function submit() {
+    setSubmitting(true);
+    const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ portfolioId: portfolio.id, symbol, assetClass: assetMap[assetClass], side, orderType, quantity, limitPrice: limitPrice ? Number(limitPrice) : undefined, timeInForce: "day" }) });
+    const payload = await response.json() as { status?: string; scheduledFor?: string; error?: string };
+    setSubmitting(false); if (!response.ok) return onError(payload.error || "Order rejected.");
+    await onComplete(payload.status === "scheduled" ? `Order queued for the next regular session: ${new Date(payload.scheduledFor || "").toLocaleString()}.` : payload.status === "filled" ? `Order filled. Positions, cash, and P&L have been recalculated.` : "Limit order accepted and is awaiting its price.");
+  }
+  return <div className="drawer-backdrop"><button className="drawer-dismiss" onClick={onClose} aria-label="Close trade ticket overlay"/><aside className="trade-drawer" aria-label="Trade ticket"><div className="drawer-head"><div><p className="eyebrow">{portfolio.name}</p><h2>New order</h2></div><button onClick={onClose} aria-label="Close trade ticket">×</button></div><div className="asset-tabs">{["Equity", "Crypto", "Futures", "Options", "Forward"].map((item) => <button key={item} disabled={!assetMap[item]} title={!assetMap[item] ? "Coming in the derivatives phase" : undefined} className={assetClass === item ? "selected" : ""} onClick={() => { setAssetClass(item); setSymbol(item === "Crypto" ? "BTC-USD" : "NVDA"); }}>{item}</button>)}</div><label>Instrument<input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="Search instruments"/></label><div className="quote-strip"><span>Bid<strong>{quote?.bid ? money(Number(quote.bid)) : "—"}</strong></span><span>Ask<strong>{quote?.ask ? money(Number(quote.ask)) : "—"}</strong></span><span>Mark<strong>{quote ? money(Number(quote.mark)) : "—"}</strong></span><span>Quality<strong className="quality-text">{quote?.quality || "Unavailable"}</strong></span></div><div className="field-row"><label>Side<select value={side} onChange={(event) => setSide(event.target.value as "buy" | "sell")}><option value="buy">Buy</option><option value="sell">Sell</option></select></label><label>Order type<select value={orderType} onChange={(event) => setOrderType(event.target.value as "market" | "limit")}><option value="market">Market</option><option value="limit">Limit</option></select></label></div><div className="field-row"><label>Quantity<input type="number" min="0.000001" step={assetClass === "Crypto" ? ".001" : "1"} value={quantity} onChange={(event) => setQuantity(Number(event.target.value))}/></label>{orderType === "limit" ? <label>Limit price<input type="number" min="0.01" step=".01" value={limitPrice} onChange={(event) => setLimitPrice(event.target.value)}/></label> : <label>Time in force<select><option>Day</option></select></label>}</div><div className="estimate-card"><div><span>Reference notional</span><strong>{money(estimatedNotional)}</strong></div><div><span>Available buying power</span><strong>{money(dashboard.account.buyingPower)}</strong></div><div><span>Execution model</span><strong>Bid/ask + size impact</strong></div><p><span className={`status-dot ${dashboard.session.isOpen || assetClass === "Crypto" ? "" : "closed"}`}/>{assetClass === "Equity" && !dashboard.session.isOpen ? "This order will queue for the next regular session." : "Eligible for current-session evaluation."}</p></div><button className="review-button" disabled={submitting || !quote || quantity <= 0 || (orderType === "limit" && !limitPrice)} onClick={submit}>{submitting ? "Checking buying power…" : "Submit order"}</button><p className="ticket-note">Zero commissions · Sufficient buying power required · Every fill is written to the ledger</p></aside></div>;
 }

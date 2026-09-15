@@ -17,8 +17,9 @@ test("server-renders the Market Madness dashboard", async () => {
   const html = await response.text();
   assert.match(html, /Market Madness/);
   assert.match(html, /Portfolio overview/);
-  assert.match(html, /Available buying power/);
-  assert.match(html, /Open positions/);
+  assert.match(html, /Opening your local portfolio ledger/);
+  assert.match(html, /Place trade/);
+  assert.match(html, /Data providers/);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Building your site/);
 });

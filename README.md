@@ -4,7 +4,9 @@ Market Madness is a local-first, multi-portfolio trading simulator for US equiti
 
 ## Current state
 
-The repository contains the product specification, core domain policies, durable data schema, and the first interactive dashboard slice. Displayed market values are representative scaffold data until provider adapters and the execution engine are connected.
+The repository now includes the product specification, core domain policies, a durable local D1/SQLite ledger, portfolio onboarding, multi-portfolio switching, account calculations, 30-second quotes, and an initial equity/crypto order path. Market and marketable limit orders fill against an explicit spread-and-size-impact model; US equity orders submitted outside the regular session are queued for the next open.
+
+The included quote adapter is deliberately labeled as simulated. It keeps the app usable without credentials while free live-data provider adapters are added next; it must not be mistaken for exchange data.
 
 ## Local development
 
@@ -15,7 +17,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. Market-data credentials will be configured through local environment variables and must never be committed.
+Open `http://localhost:3000`, create a portfolio, and choose its starting allocation. The local database is created automatically. Optional market-data credentials belong in a local `.env` file based on `.env.example` and must never be committed.
 
 ## Product rules
 

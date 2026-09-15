@@ -1,0 +1,63 @@
+import { env } from "cloudflare:workers";
+
+let ready: Promise<void> | undefined;
+
+const schemaStatements = [
+  `CREATE TABLE IF NOT EXISTS portfolios (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, base_currency TEXT NOT NULL DEFAULT 'USD',
+    starting_capital TEXT NOT NULL, benchmark_symbol TEXT, advanced_derivatives_enabled INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active', theme TEXT NOT NULL DEFAULT 'dark', last_processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS instruments (
+    id TEXT PRIMARY KEY NOT NULL, symbol TEXT NOT NULL, display_name TEXT NOT NULL, asset_class TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD', exchange TEXT, calendar_id TEXT, multiplier TEXT NOT NULL DEFAULT '1',
+    tick_size TEXT, underlying_instrument_id TEXT, expiration_at TEXT, first_notice_at TEXT, strike TEXT,
+    option_right TEXT, exercise_style TEXT, settlement_type TEXT, active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
+    order_type TEXT NOT NULL, time_in_force TEXT NOT NULL, status TEXT NOT NULL, quantity TEXT NOT NULL,
+    filled_quantity TEXT NOT NULL DEFAULT '0', limit_price TEXT, stop_price TEXT, scheduled_for TEXT,
+    rejection_reason TEXT, reconstruction_status TEXT NOT NULL DEFAULT 'observed', submitted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id), FOREIGN KEY (instrument_id) REFERENCES instruments(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS fills (
+    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL,
+    quantity TEXT NOT NULL, price TEXT NOT NULL, commission TEXT NOT NULL DEFAULT '0', slippage TEXT NOT NULL DEFAULT '0',
+    liquidity_model TEXT NOT NULL, executed_at TEXT NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(id), FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS position_lots (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, opening_fill_id TEXT NOT NULL,
+    original_quantity TEXT NOT NULL, remaining_quantity TEXT NOT NULL, cost_basis TEXT NOT NULL,
+    opened_at TEXT NOT NULL, closed_at TEXT, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id), FOREIGN KEY (opening_fill_id) REFERENCES fills(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS cash_ledger (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, event_type TEXT NOT NULL, amount TEXT NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD', related_entity_type TEXT, related_entity_id TEXT, description TEXT NOT NULL,
+    effective_at TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
+];
+
+export function getD1() {
+  if (!env.DB) throw new Error("Local portfolio database is unavailable.");
+  return env.DB;
+}
+
+export async function ensureCoreSchema() {
+  if (!ready) {
+    const db = getD1();
+    ready = db.batch(schemaStatements.map((statement) => db.prepare(statement))).then(() => undefined);
+  }
+  return ready;
+}
