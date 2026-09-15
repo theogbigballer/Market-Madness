@@ -4,9 +4,11 @@ Market Madness is a local-first, multi-portfolio trading simulator for US equiti
 
 ## Current state
 
-The repository now includes the product specification, core domain policies, a durable local D1/SQLite ledger, portfolio onboarding, multi-portfolio switching, configurable benchmark sets, account calculations, 30-second quotes, and equity, crypto, and option order paths. Market and marketable limit orders fill against an explicit spread-and-size-impact model; US equity and option orders submitted outside the regular session are queued for the next open and can be canceled before execution.
+The repository now includes the product specification, core domain policies, a durable local D1/SQLite ledger, portfolio onboarding, multi-portfolio switching, configurable benchmark sets, daily P&L snapshots, risk monitoring, 30-second quotes, and equity, crypto, option, futures, and custom-forward order paths. Market and marketable limit orders fill against an explicit spread-and-size-impact model; closed-session orders are queued and can be canceled before execution.
 
 The provider router uses Coinbase Exchange's public ticker for supported crypto pairs and optional free Alpaca IEX quotes for equities. When live coverage or credentials are unavailable, it falls back to a deliberately labeled simulated feed. Option prices are labeled indicative and use a zero-rate model consistent with the simulator's no-interest policy.
+
+Futures use an explicit contract catalog with multipliers and initial/maintenance margin. Index futures are derived from labeled live-or-simulated proxy quotes, while commodity curves remain simulated until a suitable free source is configured. Physical contracts are closed before first notice. Custom forwards store their delivery price and date, begin with no premium cash flow, and settle their marked P&L at delivery.
 
 ## Local development
 

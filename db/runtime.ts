@@ -52,12 +52,19 @@ const schemaStatements = [
     title TEXT NOT NULL, message TEXT NOT NULL, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, snapshot_date TEXT NOT NULL,
+    net_liquidation_value TEXT NOT NULL, cash TEXT NOT NULL, realized_pnl TEXT NOT NULL, unrealized_pnl TEXT NOT NULL,
+    margin_requirement TEXT NOT NULL, buying_power TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_benchmarks_portfolio_symbol ON portfolio_benchmarks(portfolio_id, symbol)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_portfolio_date ON portfolio_snapshots(portfolio_id, snapshot_date)`,
 ];
 
 export function getD1() {
