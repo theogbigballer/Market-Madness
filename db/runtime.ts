@@ -20,6 +20,10 @@ const schemaStatements = [
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, symbol TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS allocations (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, bucket TEXT NOT NULL, target_weight TEXT NOT NULL,
+    minimum_weight TEXT, maximum_weight TEXT, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
     order_type TEXT NOT NULL, time_in_force TEXT NOT NULL, status TEXT NOT NULL, quantity TEXT NOT NULL,
@@ -34,6 +38,10 @@ const schemaStatements = [
     liquidity_model TEXT NOT NULL, executed_at TEXT NOT NULL,
     FOREIGN KEY (order_id) REFERENCES orders(id), FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
     FOREIGN KEY (instrument_id) REFERENCES instruments(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS order_legs (
+    id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
+    ratio_quantity TEXT NOT NULL, FOREIGN KEY (order_id) REFERENCES orders(id), FOREIGN KEY (instrument_id) REFERENCES instruments(id)
   )`,
   `CREATE TABLE IF NOT EXISTS position_lots (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, opening_fill_id TEXT NOT NULL,
@@ -58,13 +66,23 @@ const schemaStatements = [
     margin_requirement TEXT NOT NULL, buying_power TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS processing_events (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, event_type TEXT NOT NULL, effective_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_benchmarks_portfolio_symbol ON portfolio_benchmarks(portfolio_id, symbol)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_allocations_portfolio_bucket ON allocations(portfolio_id, bucket)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_portfolio_date ON portfolio_snapshots(portfolio_id, snapshot_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_order_legs_order ON order_legs(order_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_events_idempotency ON processing_events(idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_processing_events_due ON processing_events(status, effective_at)`,
 ];
 
 export function getD1() {
