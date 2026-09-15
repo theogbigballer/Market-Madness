@@ -106,3 +106,11 @@ export const processingEvents = sqliteTable("processing_events", {
   effectiveAt: text("effective_at").notNull(), status: text("status", { enum: ["pending", "processing", "completed", "failed"] }).notNull().default("pending"),
   payload: text("payload", { mode: "json" }).notNull(), idempotencyKey: text("idempotency_key").notNull(), error: text("error"), ...timestamps,
 }, (table) => [uniqueIndex("idx_processing_events_idempotency").on(table.idempotencyKey), index("idx_processing_events_due").on(table.status, table.effectiveAt)]);
+
+export const corporateActions = sqliteTable("corporate_actions", {
+  id: text("id").primaryKey(), instrumentId: text("instrument_id").notNull().references(() => instruments.id),
+  symbol: text("symbol").notNull(), actionType: text("action_type", { enum: ["cash_dividend", "split"] }).notNull(),
+  effectiveAt: text("effective_at").notNull(), ratio: text("ratio"), cashAmount: text("cash_amount"),
+  status: text("status", { enum: ["scheduled", "applied", "canceled"] }).notNull().default("scheduled"),
+  source: text("source").notNull().default("manual_simulation"), notes: text("notes"), ...timestamps,
+}, (table) => [index("idx_corporate_actions_due").on(table.status, table.effectiveAt), index("idx_corporate_actions_instrument").on(table.instrumentId)]);

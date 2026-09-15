@@ -24,7 +24,7 @@ When the app resumes after being offline, it processes only relevant missed even
 
 ## Orders and execution
 
-Supported single-leg orders are market, limit, stop, and stop-limit, with Day and GTC duration. Atomic multi-leg option market orders support two to four editable legs, net-debit or net-credit pricing, combined buying-power checks, and closed-session queuing. Small orders fill immediately from bid/ask. Larger single-leg orders receive deterministic spread, size, liquidity, and volatility impact. The preview discloses reference price, estimated price, slippage, cash impact, margin impact, and rejection reason.
+Supported single-leg orders are market, limit, stop, and stop-limit, with Day and GTC duration. Atomic multi-leg options support two to four editable legs, market or complete-structure net limits, net-debit or net-credit pricing, combined buying-power checks, and closed-session queuing. No leg fills unless the entire structure is marketable. Small orders fill immediately from bid/ask. Larger single-leg orders receive deterministic spread, size, liquidity, and volatility impact. The preview discloses reference price, estimated price, slippage, cash impact, margin impact, and rejection reason.
 
 States are draft, submitted, scheduled, accepted, partially filled, filled, canceled, expired, or rejected. All explicit commissions and fees default to zero but remain configurable. Spread and market impact always remain active.
 
@@ -36,7 +36,9 @@ Maintenance deficiencies immediately cancel reserving orders and initiate forced
 
 ## Derivatives
 
-Advanced Derivatives gates naked short options but not ordinary defined-risk positions. Both American and European contracts are supported. American holders may request in-session early exercise; deterministic economic rules will model early assignment in a later lifecycle pass. At expiration, any contract at least $0.01 in the money auto-exercises. Exercise, assignment, resulting underlying positions, and liquidation are distinct ledger events.
+Advanced Derivatives gates naked short options but not ordinary defined-risk positions. Both American and European contracts are supported. American holders may request in-session early exercise. Short American calls are assigned deterministically before a scheduled dividend when the contract is in the money and its remaining extrinsic value does not exceed the dividend. At expiration, any contract at least $0.01 in the money auto-exercises. Exercise, assignment, resulting underlying positions, and liquidation are distinct ledger events.
+
+Corporate actions are durable scheduled records. Cash dividends post one idempotent ledger entry per affected portfolio, including negative payments for short shares. Simulated splits adjust share quantities and cost bases, linked option quantities and strikes, and the local quote basis so portfolio economic value is preserved.
 
 Cash-settled derivatives post cash directly. Physically settled options create or remove underlying positions. Physically delivered futures must be closed before first notice; cash-settled futures settle normally. Rolls are manual with alerts and a one-click roll ticket.
 

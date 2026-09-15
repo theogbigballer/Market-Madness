@@ -72,6 +72,12 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS corporate_actions (
+    id TEXT PRIMARY KEY NOT NULL, instrument_id TEXT NOT NULL, symbol TEXT NOT NULL, action_type TEXT NOT NULL,
+    effective_at TEXT NOT NULL, ratio TEXT, cash_amount TEXT, status TEXT NOT NULL DEFAULT 'scheduled',
+    source TEXT NOT NULL DEFAULT 'manual_simulation', notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (instrument_id) REFERENCES instruments(id)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
@@ -83,6 +89,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_order_legs_order ON order_legs(order_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_events_idempotency ON processing_events(idempotency_key)`,
   `CREATE INDEX IF NOT EXISTS idx_processing_events_due ON processing_events(status, effective_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_corporate_actions_due ON corporate_actions(status, effective_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_corporate_actions_instrument ON corporate_actions(instrument_id)`,
 ];
 
 export function getD1() {

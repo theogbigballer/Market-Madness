@@ -150,11 +150,13 @@ async function reservedBuyingPower(portfolioId: string) {
     else if (order.asset_class === "forward") reserved += Number(quote.mark) * quantity * 0.1;
     else reserved += Number(order.limit_price || quote.ask || quote.mark) * quantity * multiplier;
   }
-  const strategies = await getD1().prepare("SELECT id, quantity FROM orders WHERE portfolio_id = ? AND status IN ('scheduled', 'accepted', 'submitted') AND EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = orders.id)").bind(portfolioId).all<{ id: string; quantity: string }>();
+  const strategies = await getD1().prepare("SELECT id, quantity, side, order_type, limit_price FROM orders WHERE portfolio_id = ? AND status IN ('scheduled', 'accepted', 'submitted') AND EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = orders.id)").bind(portfolioId).all<{ id: string; quantity: string; side: "buy" | "sell"; order_type: "market" | "limit"; limit_price: string | null }>();
   for (const strategy of strategies.results) {
     const legs = await strategyLegs(strategy.id);
     const preview = await previewOptionStrategy(legs, Number(strategy.quantity));
-    reserved += preview.maxLoss ?? Math.max(0, preview.netDebit) + Number(preview.legs[0].analytics.spot) * 100 * Number(strategy.quantity) * 0.2;
+    const worstNetDebit = strategy.order_type === "limit" ? (strategy.side === "buy" ? 1 : -1) * Number(strategy.limit_price) * 100 * Number(strategy.quantity) : preview.netDebit;
+    const adversePremium = Math.max(0, worstNetDebit - preview.netDebit);
+    reserved += preview.maxLoss === null ? Math.max(0, preview.netDebit) + Number(preview.legs[0].analytics.spot) * 100 * Number(strategy.quantity) * 0.2 + adversePremium : preview.maxLoss + adversePremium;
   }
   return reserved;
 }
@@ -168,9 +170,14 @@ async function strategyLegs(orderId: string): Promise<OptionStrategyLeg[]> {
 
 async function executeOptionStrategyOrder(portfolioId: string, orderId: string) {
   if (!getUsEquitySession().isOpen) return false;
-  const db = getD1(), order = await db.prepare("SELECT id, quantity, status FROM orders WHERE id = ? AND portfolio_id = ? AND status IN ('scheduled', 'accepted')").bind(orderId, portfolioId).first<{ id: string; quantity: string; status: string }>();
+  const db = getD1(), order = await db.prepare("SELECT id, quantity, status, side, order_type, limit_price FROM orders WHERE id = ? AND portfolio_id = ? AND status IN ('scheduled', 'accepted')").bind(orderId, portfolioId).first<{ id: string; quantity: string; status: string; side: "buy" | "sell"; order_type: "market" | "limit"; limit_price: string | null }>();
   if (!order) return false;
   const legs = await strategyLegs(orderId), preview = await previewOptionStrategy(legs, Number(order.quantity));
+  const marketable = order.order_type === "market" || (order.side === "buy" ? preview.netPrice <= Number(order.limit_price) : Math.abs(preview.netPrice) >= Number(order.limit_price));
+  if (!marketable) {
+    await db.prepare("UPDATE orders SET status = 'accepted', scheduled_for = NULL, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), orderId).run();
+    return false;
+  }
   const currentLots = await openLots(portfolioId), now = new Date().toISOString(), statements = [
     db.prepare("UPDATE orders SET status = 'filled', filled_quantity = quantity, scheduled_for = NULL, updated_at = ? WHERE id = ?").bind(now, orderId),
   ];
@@ -247,6 +254,107 @@ export async function cancelOrder(portfolioId: string, orderId: string) {
   const result = await getD1().prepare("UPDATE orders SET status = 'canceled', scheduled_for = NULL, updated_at = ? WHERE id = ? AND portfolio_id = ? AND status IN ('scheduled', 'accepted', 'submitted')").bind(new Date().toISOString(), orderId, portfolioId).run();
   if (!result.meta.changes) throw new Error("Only active or queued orders can be canceled.");
   return { orderId, status: "canceled" };
+}
+
+type CorporateActionRow = { id: string; instrument_id: string; symbol: string; action_type: "cash_dividend" | "split"; effective_at: string; ratio: string | null; cash_amount: string | null; status: "scheduled" | "applied" | "canceled"; source: string; notes: string | null; created_at: string };
+
+export async function listCorporateActions() {
+  await ensureCoreSchema();
+  const result = await getD1().prepare("SELECT id, instrument_id, symbol, action_type, effective_at, ratio, cash_amount, status, source, notes, created_at FROM corporate_actions ORDER BY effective_at DESC LIMIT 50").all<CorporateActionRow>();
+  return result.results.map((action) => ({ id: action.id, symbol: action.symbol, actionType: action.action_type, effectiveAt: action.effective_at, ratio: action.ratio === null ? null : Number(action.ratio), cashAmount: action.cash_amount === null ? null : Number(action.cash_amount), status: action.status, source: action.source, notes: action.notes }));
+}
+
+export async function scheduleCorporateAction(input: { symbol: string; actionType: "cash_dividend" | "split"; effectiveDate: string; ratio?: number; cashAmount?: number; notes?: string }) {
+  await ensureCoreSchema();
+  const symbol = input.symbol.trim().toUpperCase();
+  if (!symbol || !/^\d{4}-\d{2}-\d{2}$/.test(input.effectiveDate)) throw new Error("A symbol and effective date are required.");
+  if (input.actionType === "split" && (!Number.isFinite(input.ratio) || Number(input.ratio) <= 0)) throw new Error("A split requires a positive adjustment ratio.");
+  if (input.actionType === "cash_dividend" && (!Number.isFinite(input.cashAmount) || Number(input.cashAmount) <= 0)) throw new Error("A cash dividend requires a positive per-share amount.");
+  const instrumentId = `equity:${symbol}`, quote = await getMarketQuote(symbol, "equity"), id = crypto.randomUUID(), now = new Date().toISOString(), effectiveAt = `${input.effectiveDate}T13:30:00.000Z`, db = getD1();
+  await db.batch([
+    db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id) VALUES (?, ?, ?, 'equity', 'US', 'XNYS')").bind(instrumentId, symbol, quote.name),
+    db.prepare("INSERT INTO corporate_actions (id, instrument_id, symbol, action_type, effective_at, ratio, cash_amount, source, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual_simulation', ?, ?, ?)").bind(id, instrumentId, symbol, input.actionType, effectiveAt, input.ratio?.toString() ?? null, input.cashAmount?.toString() ?? null, input.notes?.trim() || null, now, now),
+  ]);
+  return { id, status: "scheduled", effectiveAt };
+}
+
+export async function cancelCorporateAction(actionId: string) {
+  await ensureCoreSchema();
+  const result = await getD1().prepare("UPDATE corporate_actions SET status = 'canceled', updated_at = ? WHERE id = ? AND status = 'scheduled' AND effective_at > ?").bind(new Date().toISOString(), actionId, new Date().toISOString()).run();
+  if (!result.meta.changes) throw new Error("Only future scheduled actions can be canceled.");
+  return { id: actionId, status: "canceled" };
+}
+
+async function processCorporateActions() {
+  const db = getD1(), now = new Date().toISOString();
+  const actions = await db.prepare("SELECT id, instrument_id, symbol, action_type, effective_at, ratio, cash_amount, status, source, notes, created_at FROM corporate_actions WHERE status = 'scheduled' AND effective_at <= ? ORDER BY effective_at").bind(now).all<CorporateActionRow>();
+  for (const action of actions.results) {
+    const holders = await db.prepare("SELECT portfolio_id, SUM(CAST(remaining_quantity AS REAL)) AS quantity FROM position_lots WHERE instrument_id = ? AND CAST(remaining_quantity AS REAL) != 0 GROUP BY portfolio_id").bind(action.instrument_id).all<{ portfolio_id: string; quantity: number }>();
+    const statements = [];
+    if (action.action_type === "cash_dividend") {
+      const amount = Number(action.cash_amount);
+      for (const holder of holders.results) {
+        const cash = Number(holder.quantity) * amount;
+        statements.push(
+          db.prepare("INSERT OR IGNORE INTO cash_ledger (id, portfolio_id, event_type, amount, related_entity_type, related_entity_id, description, effective_at, idempotency_key) VALUES (?, ?, 'dividend', ?, 'corporate_action', ?, ?, ?, ?)").bind(crypto.randomUUID(), holder.portfolio_id, cash.toFixed(2), action.id, `${action.symbol} cash dividend · ${amount.toFixed(4)} per share`, action.effective_at, `corporate-action:${action.id}:${holder.portfolio_id}:cash`),
+          db.prepare("INSERT INTO alerts (id, portfolio_id, severity, event_type, title, message) VALUES (?, ?, 'info', 'corporate_action', 'Cash dividend processed', ?)").bind(crypto.randomUUID(), holder.portfolio_id, `${action.symbol} posted ${cash.toFixed(2)} to the cash ledger.`),
+          db.prepare("INSERT OR IGNORE INTO processing_events (id, portfolio_id, event_type, effective_at, status, payload, idempotency_key) VALUES (?, ?, 'corporate_action', ?, 'completed', ?, ?)").bind(crypto.randomUUID(), holder.portfolio_id, action.effective_at, JSON.stringify({ actionId: action.id, type: action.action_type, cash }), `corporate-action:${action.id}:${holder.portfolio_id}:event`),
+        );
+      }
+    } else {
+      const ratio = Number(action.ratio);
+      statements.push(
+        db.prepare("UPDATE position_lots SET remaining_quantity = CAST(CAST(remaining_quantity AS REAL) * ? AS TEXT), original_quantity = CAST(CAST(original_quantity AS REAL) * ? AS TEXT), cost_basis = CAST(CAST(cost_basis AS REAL) / ? AS TEXT) WHERE instrument_id = ? AND CAST(remaining_quantity AS REAL) != 0").bind(ratio, ratio, ratio, action.instrument_id),
+        db.prepare("UPDATE position_lots SET remaining_quantity = CAST(CAST(remaining_quantity AS REAL) * ? AS TEXT), original_quantity = CAST(CAST(original_quantity AS REAL) * ? AS TEXT), cost_basis = CAST(CAST(cost_basis AS REAL) / ? AS TEXT) WHERE instrument_id IN (SELECT id FROM instruments WHERE underlying_instrument_id = ? AND asset_class = 'option') AND CAST(remaining_quantity AS REAL) != 0").bind(ratio, ratio, ratio, action.instrument_id),
+        db.prepare("UPDATE instruments SET strike = CAST(CAST(strike AS REAL) / ? AS TEXT), updated_at = ? WHERE underlying_instrument_id = ? AND asset_class = 'option'").bind(ratio, now, action.instrument_id),
+      );
+      for (const holder of holders.results) statements.push(
+        db.prepare("INSERT INTO alerts (id, portfolio_id, severity, event_type, title, message) VALUES (?, ?, 'warning', 'corporate_action', 'Split adjustment processed', ?)").bind(crypto.randomUUID(), holder.portfolio_id, `${action.symbol} positions and linked option contracts were adjusted ${ratio}:1.`),
+        db.prepare("INSERT OR IGNORE INTO processing_events (id, portfolio_id, event_type, effective_at, status, payload, idempotency_key) VALUES (?, ?, 'corporate_action', ?, 'completed', ?, ?)").bind(crypto.randomUUID(), holder.portfolio_id, action.effective_at, JSON.stringify({ actionId: action.id, type: action.action_type, ratio }), `corporate-action:${action.id}:${holder.portfolio_id}:event`),
+      );
+    }
+    statements.push(db.prepare("UPDATE corporate_actions SET status = 'applied', updated_at = ? WHERE id = ? AND status = 'scheduled'").bind(now, action.id));
+    await db.batch(statements);
+  }
+}
+
+async function processAmericanEarlyAssignments(portfolioId: string) {
+  const db = getD1(), now = new Date(), from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(), through = new Date(now.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const candidates = await db.prepare(`SELECT l.id, l.instrument_id, l.remaining_quantity, i.symbol, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style,
+      ca.id AS action_id, ca.cash_amount, ca.effective_at
+    FROM position_lots l JOIN instruments i ON i.id = l.instrument_id
+    JOIN corporate_actions ca ON ca.instrument_id = i.underlying_instrument_id AND ca.action_type = 'cash_dividend' AND ca.status = 'scheduled'
+    WHERE l.portfolio_id = ? AND i.asset_class = 'option' AND i.exercise_style = 'american' AND i.option_right = 'call'
+      AND CAST(l.remaining_quantity AS REAL) < 0 AND ca.effective_at BETWEEN ? AND ? AND i.expiration_at > ca.effective_at`)
+    .bind(portfolioId, from, through).all<{ id: string; instrument_id: string; remaining_quantity: string; symbol: string; underlying_instrument_id: string; expiration_at: string; strike: string; option_right: "call"; exercise_style: "american"; action_id: string; cash_amount: string; effective_at: string }>();
+  for (const lot of candidates.results) {
+    const key = `early-assignment:${lot.id}:${lot.action_id}`;
+    if (await db.prepare("SELECT id FROM processing_events WHERE idempotency_key = ?").bind(key).first()) continue;
+    const contract: OptionContract = { underlying: lot.underlying_instrument_id.replace("equity:", ""), expiration: lot.expiration_at.slice(0, 10), strike: Number(lot.strike), right: "call", exerciseStyle: "american" };
+    const quote = await getOptionQuote(contract), dividend = Number(lot.cash_amount);
+    if (quote.analytics.intrinsic < 0.01 || quote.analytics.extrinsic > dividend) continue;
+    const contracts = Math.abs(Number(lot.remaining_quantity)), shares = contracts * 100, assignmentAt = new Date(Math.min(now.getTime(), new Date(lot.effective_at).getTime() - 1)).toISOString(), orderId = crypto.randomUUID(), fillId = crypto.randomUUID();
+    const underlyingLots = await openLots(portfolioId), statements = [
+      db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id) VALUES (?, ?, ?, 'equity', 'US', 'XNYS')").bind(lot.underlying_instrument_id, contract.underlying, contract.underlying),
+      db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, reconstruction_status, submitted_at, created_at, updated_at) VALUES (?, ?, ?, 'sell', 'market', 'day', 'filled', ?, ?, 'reconstructed', ?, ?, ?)`).bind(orderId, portfolioId, lot.underlying_instrument_id, shares.toString(), shares.toString(), assignmentAt, assignmentAt, assignmentAt),
+      db.prepare("INSERT INTO fills (id, order_id, portfolio_id, instrument_id, quantity, price, slippage, liquidity_model, executed_at) VALUES (?, ?, ?, ?, ?, ?, '0', 'deterministic dividend-driven early assignment', ?)").bind(fillId, orderId, portfolioId, lot.underlying_instrument_id, shares.toString(), Number(lot.strike).toFixed(2), assignmentAt),
+      db.prepare("UPDATE position_lots SET remaining_quantity = '0', closed_at = ? WHERE id = ?").bind(assignmentAt, lot.id),
+    ];
+    let remainingShares = -shares;
+    for (const underlyingLot of underlyingLots.filter((item) => item.instrument_id === lot.underlying_instrument_id && Number(item.remaining_quantity) > 0)) {
+      if (!remainingShares) break;
+      const existing = Number(underlyingLot.remaining_quantity), closed = Math.min(Math.abs(remainingShares), existing), next = existing - closed;
+      remainingShares += closed;
+      statements.push(db.prepare("UPDATE position_lots SET remaining_quantity = ?, closed_at = ? WHERE id = ?").bind(next.toString(), next === 0 ? assignmentAt : null, underlyingLot.id));
+    }
+    if (remainingShares) statements.push(db.prepare("INSERT INTO position_lots (id, portfolio_id, instrument_id, opening_fill_id, original_quantity, remaining_quantity, cost_basis, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, lot.underlying_instrument_id, fillId, remainingShares.toString(), remainingShares.toString(), Number(lot.strike).toFixed(2), assignmentAt));
+    statements.push(
+      db.prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, related_entity_type, related_entity_id, description, effective_at, idempotency_key) VALUES (?, ?, 'assignment', ?, 'fill', ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, (shares * Number(lot.strike)).toFixed(2), fillId, `${lot.symbol} assigned before ${contract.underlying} ex-dividend date`, assignmentAt, `early-assignment-cash:${lot.id}:${lot.action_id}`),
+      db.prepare("INSERT INTO alerts (id, portfolio_id, severity, event_type, title, message) VALUES (?, ?, 'warning', 'option_assignment', 'American call assigned early', ?)").bind(crypto.randomUUID(), portfolioId, `${lot.symbol} was assigned because remaining extrinsic value (${quote.analytics.extrinsic.toFixed(2)}) did not exceed the ${dividend.toFixed(2)} dividend.`),
+      db.prepare("INSERT INTO processing_events (id, portfolio_id, event_type, effective_at, status, payload, idempotency_key) VALUES (?, ?, 'assignment', ?, 'completed', ?, ?)").bind(crypto.randomUUID(), portfolioId, assignmentAt, JSON.stringify({ lotId: lot.id, actionId: lot.action_id, contracts, dividend, extrinsic: quote.analytics.extrinsic }), key),
+    );
+    await db.batch(statements);
+  }
 }
 
 async function processOptionExpirations(portfolioId: string) {
@@ -338,6 +446,8 @@ async function forceMarginLiquidation(portfolioId: string, equity: number, maint
 
 export async function getDashboard(portfolioId: string, afterLiquidation = false): Promise<Record<string, unknown>> {
   await ensureCoreSchema();
+  await processAmericanEarlyAssignments(portfolioId);
+  await processCorporateActions();
   await processDerivativeSettlements(portfolioId);
   await processOptionExpirations(portfolioId);
   await processOptionStrategyOrders(portfolioId);
@@ -346,9 +456,10 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   if (!portfolio) throw new Error("Portfolio not found.");
   const [cash, lots, orderResult] = await Promise.all([
     cashBalance(portfolioId), openLots(portfolioId),
-    getD1().prepare(`SELECT o.id, o.side, o.order_type, o.status, o.quantity, o.filled_quantity, o.scheduled_for, o.created_at, i.symbol
+    getD1().prepare(`SELECT o.id, o.side, o.order_type, o.status, o.quantity, o.filled_quantity, o.limit_price, o.scheduled_for, o.created_at, i.symbol,
+      (SELECT COUNT(*) FROM order_legs ol WHERE ol.order_id = o.id) AS leg_count
       FROM orders o JOIN instruments i ON i.id = o.instrument_id WHERE o.portfolio_id = ? ORDER BY o.created_at DESC LIMIT 12`)
-      .bind(portfolioId).all<{ id: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; scheduled_for: string | null; created_at: string; symbol: string }>(),
+      .bind(portfolioId).all<{ id: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; limit_price: string | null; scheduled_for: string | null; created_at: string; symbol: string; leg_count: number }>(),
   ]);
 
   const grouped = new Map<string, { instrumentId: string; symbol: string; name: string; assetClass: AssetClass; quantity: number; basisNumerator: number; multiplier: number; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract }>();
@@ -421,7 +532,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   return {
     portfolio: { id: portfolio.id, name: portfolio.name, startingCapital, advancedDerivativesEnabled: Boolean(portfolio.advanced_derivatives_enabled), theme: portfolio.theme },
     account: { cash, marketValue, netLiquidationValue, totalPnl, totalReturn: startingCapital ? totalPnl / startingCapital : 0, buyingPower, reservedBuyingPower: reservedForOrders, grossExposure, maintenanceMargin, marginUtilization: netLiquidationValue > 0 ? maintenanceMargin / netLiquidationValue : 0 },
-    positions, orders: orderResult.results, benchmarks: await getBenchmarks(portfolioId), allocations: await getAllocations(portfolioId), session,
+    positions, orders: orderResult.results, benchmarks: await getBenchmarks(portfolioId), allocations: await getAllocations(portfolioId), corporateActions: await listCorporateActions(), session,
     pnlHistory: snapshotResult.results.map((item) => ({ date: item.snapshot_date, netLiquidationValue: Number(item.net_liquidation_value), realizedPnl: Number(item.realized_pnl), unrealizedPnl: Number(item.unrealized_pnl) })).reverse(),
     risk: { leverage: netLiquidationValue > 0 ? grossExposure / netLiquidationValue : 0, estimatedDailyVar, largestPosition: largestPosition ? { ...largestPosition, concentration: grossExposure ? largestPosition.value / grossExposure : 0 } : null, greeks, scenarios },
     alerts: alertResult.results,
@@ -429,12 +540,17 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   };
 }
 
-export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[] }) {
+export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[]; orderType?: "market" | "limit"; netLimitPrice?: number }) {
   await ensureCoreSchema();
+  const orderType = input.orderType || "market";
+  if (orderType === "limit" && (!Number.isFinite(input.netLimitPrice) || Number(input.netLimitPrice) <= 0)) throw new Error("A positive net limit is required.");
   const preview = await previewOptionStrategy(input.legs, input.units);
   const dashboard = await getDashboard(input.portfolioId) as { portfolio: { advancedDerivativesEnabled: boolean }; account: { buyingPower: number } };
   if (preview.unboundedRisk && !dashboard.portfolio.advancedDerivativesEnabled) throw new Error("A strategy with uncovered call risk requires Advanced Derivatives.");
-  const required = preview.maxLoss ?? Math.max(0, preview.netDebit) + preview.legs[0].analytics.spot * 100 * input.units * 0.2;
+  const strategySide = preview.netDebit >= 0 ? "buy" : "sell";
+  const worstNetDebit = orderType === "limit" ? (strategySide === "buy" ? 1 : -1) * Number(input.netLimitPrice) * 100 * input.units : preview.netDebit;
+  const adversePremium = Math.max(0, worstNetDebit - preview.netDebit);
+  const required = preview.maxLoss === null ? Math.max(0, preview.netDebit) + preview.legs[0].analytics.spot * 100 * input.units * 0.2 + adversePremium : preview.maxLoss + adversePremium;
   if (required > dashboard.account.buyingPower + 0.005) throw new Error(`Insufficient buying power. This strategy requires approximately $${required.toLocaleString("en-US", { maximumFractionDigits: 2 })}.`);
   const session = getUsEquitySession(), status = session.isOpen ? "accepted" : "scheduled", now = new Date().toISOString(), orderId = crypto.randomUUID(), db = getD1();
   const statements = [];
@@ -444,12 +560,12 @@ export async function placeOptionStrategy(input: { portfolioId: string; units: n
       VALUES (?, ?, ?, 'option', 'US', 'XNYS', '100', ?, ?, ?, ?, ?, 'physical')`).bind(instrumentId, leg.symbol, `${preview.underlying} ${leg.contract.expiration} ${leg.contract.strike} ${leg.contract.right.toUpperCase()} · ${leg.contract.exerciseStyle}`, `equity:${preview.underlying}`, `${leg.contract.expiration}T20:00:00.000Z`, leg.contract.strike.toString(), leg.contract.right, leg.contract.exerciseStyle));
   }
   const first = preview.legs[0];
-  statements.push(db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, scheduled_for, submitted_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'market', 'day', ?, ?, '0', ?, ?, ?, ?)`).bind(orderId, input.portfolioId, `option:${first.symbol}`, preview.netDebit >= 0 ? "buy" : "sell", status, input.units.toString(), status === "scheduled" ? session.nextOpenAt : null, now, now, now));
+  statements.push(db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, limit_price, scheduled_for, submitted_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'day', ?, ?, '0', ?, ?, ?, ?, ?)`).bind(orderId, input.portfolioId, `option:${first.symbol}`, strategySide, orderType, status, input.units.toString(), input.netLimitPrice?.toString() ?? null, status === "scheduled" ? session.nextOpenAt : null, now, now, now));
   for (const leg of preview.legs) statements.push(db.prepare("INSERT INTO order_legs (id, order_id, instrument_id, side, ratio_quantity) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), orderId, `option:${leg.symbol}`, leg.side, leg.ratio.toString()));
   await db.batch(statements);
-  if (session.isOpen) await executeOptionStrategyOrder(input.portfolioId, orderId);
-  return { orderId, status: session.isOpen ? "filled" : "scheduled", scheduledFor: session.isOpen ? null : session.nextOpenAt, preview };
+  const filled = session.isOpen ? await executeOptionStrategyOrder(input.portfolioId, orderId) : false;
+  return { orderId, status: session.isOpen ? (filled ? "filled" : "accepted") : "scheduled", scheduledFor: session.isOpen ? null : session.nextOpenAt, preview };
 }
 
 export async function exerciseAmericanOption(input: { portfolioId: string; instrumentId: string; quantity: number }) {

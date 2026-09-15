@@ -2,11 +2,12 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import StrategyBuilder from "./components/StrategyBuilder";
+import CorporateActionsPanel, { type CorporateAction } from "./components/CorporateActionsPanel";
 
 type Portfolio = { id: string; name: string; startingCapital: number; advancedDerivativesEnabled: boolean; theme: string };
 type Quote = { bid?: string; ask?: string; last?: string; mark: string; provider: string; quality: string; observedAt: string; name?: string };
 type Position = { instrumentId: string; symbol: string; name: string; assetClass: string; quantity: number; mark: number; averageCost: number; marketValue: number; unrealizedPnl: number; quote: Quote; optionGreeks?: { delta: number; gamma: number; theta: number; vega: number }; optionContract?: { underlying: string; expiration: string; strike: number; right: "call" | "put"; exerciseStyle: "american" | "european" } };
-type Order = { id: string; symbol: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; scheduled_for: string | null; created_at: string };
+type Order = { id: string; symbol: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; limit_price: string | null; scheduled_for: string | null; created_at: string; leg_count: number };
 type FutureContract = { root: string; symbol: string; name: string; expiration: string; firstNotice?: string; multiplier: number; initialMargin: number; maintenanceMargin: number; settlementType: "cash" | "physical"; quote: Quote };
 type Dashboard = {
   portfolio: Portfolio;
@@ -14,6 +15,7 @@ type Dashboard = {
   positions: Position[]; orders: Order[];
   benchmarks: { symbol: string; quote: Quote }[];
   allocations: { bucket: string; targetWeight: number; minimumWeight: number | null; maximumWeight: number | null }[];
+  corporateActions: CorporateAction[];
   pnlHistory: { date: string; netLiquidationValue: number; realizedPnl: number; unrealizedPnl: number }[];
   risk: { leverage: number; estimatedDailyVar: number; largestPosition: { symbol: string; value: number; concentration: number } | null; greeks: { delta: number; gamma: number; theta: number; vega: number }; scenarios: { shock: number; estimatedPnl: number }[] };
   alerts: { id: string; severity: string; event_type: string; title: string; message: string; created_at: string }[];
@@ -21,7 +23,7 @@ type Dashboard = {
   quoteStatus: { provider: string; quality: string; refreshedAt: string };
 };
 
-const navigation = ["Overview", "Trade", "Strategies", "Positions", "Markets", "Orders", "P&L", "Risk", "Allocation", "Activity"];
+const navigation = ["Overview", "Trade", "Strategies", "Positions", "Markets", "Orders", "P&L", "Risk", "Allocation", "Corporate actions", "Activity"];
 const marketSymbols = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"];
 const sparkBars = [28,31,29,37,34,40,43,39,46,49,47,55,52,61,59,67,65,73,70,76,79,84,81,88,92,89,96];
 const assetMap: Record<string, "equity" | "crypto" | "option" | "future" | "forward"> = { Equity: "equity", Crypto: "crypto", Options: "option", Futures: "future", Forward: "forward" };
@@ -122,8 +124,9 @@ export default function Home() {
           {dashboard && active === "Risk" && <RiskPanel dashboard={dashboard} />}
           {dashboard && active === "Activity" && <ActivityPanel dashboard={dashboard} />}
           {dashboard && active === "Allocation" && <AllocationPanel key={dashboard.portfolio.id} dashboard={dashboard} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
+          {dashboard && active === "Corporate actions" && <CorporateActionsPanel actions={dashboard.corporateActions} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Settings" && <SettingsPanel key={dashboard.portfolio.id} dashboard={dashboard} onRefresh={async () => { await loadPortfolios(); await refreshDashboard(); }} onPortfolioRemoved={async () => { setPortfolioId(""); setDashboard(null); await loadPortfolios(); }} onNotice={setNotice} onError={setError} />}
-          {dashboard && !["Overview", "Strategies", "Positions", "Orders", "Markets", "Trade", "P&L", "Risk", "Activity", "Allocation", "Settings"].includes(active) && <ModulePanel title={active} />}
+          {dashboard && !["Overview", "Strategies", "Positions", "Orders", "Markets", "Trade", "P&L", "Risk", "Activity", "Allocation", "Corporate actions", "Settings"].includes(active) && <ModulePanel title={active} />}
         </div>
       </section>
 
@@ -168,7 +171,7 @@ function OrdersTable({ orders, portfolioId, onRefresh, onNotice, onError }: { or
     if (!response.ok) return onError?.(payload.error || "Unable to cancel order.");
     onNotice?.("Order canceled before execution."); await onRefresh?.();
   }
-  return <section className="panel positions-panel standalone-panel"><div className="panel-head"><div><span className="panel-title">Order activity</span><p>Scheduled equity and option orders are evaluated automatically at the next regular session</p></div></div>{orders.length ? <div className="table-wrap"><table><thead><tr><th>Instrument</th><th>Side</th><th>Type</th><th>Status</th><th className="number">Quantity</th><th className="number">Submitted</th><th></th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong>{order.symbol}</strong></td><td>{order.side}</td><td>{order.order_type}</td><td><span className={`status-pill ${order.status}`}>{order.status.replace("_", " ")}</span>{order.scheduled_for && <small>Activates {new Date(order.scheduled_for).toLocaleString()}</small>}</td><td className="number">{order.quantity}</td><td className="number">{new Date(order.created_at).toLocaleString()}</td><td>{["scheduled", "accepted", "submitted"].includes(order.status) && portfolioId && <button className="text-button danger" onClick={() => cancel(order.id)}>Cancel</button>}</td></tr>)}</tbody></table></div> : <div className="panel-empty"><strong>No orders yet</strong><span>Submitted and queued orders will appear here.</span></div>}</section>;
+  return <section className="panel positions-panel standalone-panel"><div className="panel-head"><div><span className="panel-title">Order activity</span><p>Scheduled equity and option orders are evaluated automatically at the next regular session</p></div></div>{orders.length ? <div className="table-wrap"><table><thead><tr><th>Instrument</th><th>Side</th><th>Type</th><th>Status</th><th className="number">Quantity</th><th className="number">Submitted</th><th></th></tr></thead><tbody>{orders.map((order) => <tr key={order.id}><td><strong>{order.leg_count ? `${order.leg_count}-leg strategy` : order.symbol}</strong>{order.leg_count > 0 && <small>{order.symbol} lead contract</small>}</td><td>{order.side}</td><td>{order.order_type}{order.order_type === "limit" && order.limit_price && <small>{order.side === "buy" ? "Max debit" : "Min credit"} {money(Number(order.limit_price))}</small>}</td><td><span className={`status-pill ${order.status}`}>{order.status.replace("_", " ")}</span>{order.scheduled_for && <small>Activates {new Date(order.scheduled_for).toLocaleString()}</small>}</td><td className="number">{order.quantity}</td><td className="number">{new Date(order.created_at).toLocaleString()}</td><td>{["scheduled", "accepted", "submitted"].includes(order.status) && portfolioId && <button className="text-button danger" onClick={() => cancel(order.id)}>Cancel</button>}</td></tr>)}</tbody></table></div> : <div className="panel-empty"><strong>No orders yet</strong><span>Submitted and queued orders will appear here.</span></div>}</section>;
 }
 
 function BenchmarkManager({ dashboard, onRefresh, onNotice, onError }: { dashboard: Dashboard; onRefresh: () => Promise<void>; onNotice: (message: string) => void; onError: (message: string) => void }) {

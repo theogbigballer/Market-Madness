@@ -1,5 +1,6 @@
 import type { AssetClass, NormalizedQuote } from "../domain";
 import { env } from "cloudflare:workers";
+import { ensureCoreSchema, getD1 } from "../../db/runtime";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -59,13 +60,23 @@ async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
 
 export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity"): Promise<ExtendedQuote> {
   const symbol = symbolInput.trim().toUpperCase();
+  let quote: ExtendedQuote;
   try {
     const live = assetClass === "crypto" ? await coinbaseQuote(symbol) : assetClass === "equity" ? await alpacaQuote(symbol) : null;
-    return live || getDemoQuote(symbol, assetClass);
+    quote = live || getDemoQuote(symbol, assetClass);
   } catch {
     const fallback = getDemoQuote(symbol, assetClass);
-    return { ...fallback, provider: `${fallback.provider} · live provider unavailable` };
+    quote = { ...fallback, provider: `${fallback.provider} · live provider unavailable` };
   }
+  if (assetClass !== "equity") return quote;
+  try {
+    await ensureCoreSchema();
+    const actions = await getD1().prepare("SELECT ratio FROM corporate_actions WHERE instrument_id = ? AND action_type = 'split' AND status = 'applied' AND source = 'manual_simulation'").bind(`equity:${symbol}`).all<{ ratio: string }>();
+    const adjustment = actions.results.reduce((factor, action) => factor * Number(action.ratio), 1);
+    if (adjustment === 1) return quote;
+    const adjusted = (value?: string) => value === undefined ? undefined : (Number(value) / adjustment).toFixed(2);
+    return { ...quote, bid: adjusted(quote.bid), ask: adjusted(quote.ask), last: adjusted(quote.last), mark: adjusted(quote.mark)!, provider: `${quote.provider} · simulated split-adjusted` };
+  } catch { return quote; }
 }
 
 export function estimateExecution(quote: ReturnType<typeof getDemoQuote>, side: "buy" | "sell", quantity: number) {
