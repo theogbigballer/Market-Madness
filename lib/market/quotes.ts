@@ -1,4 +1,5 @@
 import type { AssetClass, NormalizedQuote } from "../domain";
+import { env } from "cloudflare:workers";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -27,6 +28,44 @@ export function getDemoQuote(symbolInput: string, assetClass: AssetClass = "equi
     bid: (mark - item.spread / 2).toFixed(2), ask: (mark + item.spread / 2).toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2),
     observedAt: new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume,
   };
+}
+
+type ExtendedQuote = ReturnType<typeof getDemoQuote>;
+
+async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
+  const runtime = env as unknown as { ALPACA_API_KEY_ID?: string; ALPACA_API_SECRET_KEY?: string };
+  if (!runtime.ALPACA_API_KEY_ID || !runtime.ALPACA_API_SECRET_KEY) return null;
+  const response = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(symbol)}/quotes/latest?feed=iex`, {
+    headers: { "APCA-API-KEY-ID": runtime.ALPACA_API_KEY_ID, "APCA-API-SECRET-KEY": runtime.ALPACA_API_SECRET_KEY },
+    signal: AbortSignal.timeout(4_000),
+  });
+  if (!response.ok) throw new Error(`Alpaca returned ${response.status}.`);
+  const payload = await response.json() as { quote?: { bp?: number; ap?: number; t?: string } };
+  const item = catalog[symbol], bid = payload.quote?.bp, ask = payload.quote?.ap;
+  if (!item || !bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
+  const mark = (bid + ask) / 2;
+  return { instrumentId: `equity:${symbol}`, provider: "Alpaca IEX", quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt: payload.quote?.t || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume };
+}
+
+async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
+  if (symbol !== "BTC-USD") return null;
+  const response = await fetch(`https://api.exchange.coinbase.com/products/${encodeURIComponent(symbol)}/ticker`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(4_000) });
+  if (!response.ok) throw new Error(`Coinbase returned ${response.status}.`);
+  const payload = await response.json() as { bid?: string; ask?: string; price?: string; time?: string };
+  if (!payload.bid || !payload.ask || !payload.price) throw new Error("Coinbase did not return a complete quote.");
+  const item = catalog[symbol];
+  return { instrumentId: `crypto:${symbol}`, provider: "Coinbase Exchange", quality: "live", bid: Number(payload.bid).toFixed(2), ask: Number(payload.ask).toFixed(2), last: Number(payload.price).toFixed(2), mark: Number(payload.price).toFixed(2), observedAt: payload.time || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume };
+}
+
+export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity"): Promise<ExtendedQuote> {
+  const symbol = symbolInput.trim().toUpperCase();
+  try {
+    const live = assetClass === "crypto" ? await coinbaseQuote(symbol) : assetClass === "equity" ? await alpacaQuote(symbol) : null;
+    return live || getDemoQuote(symbol, assetClass);
+  } catch {
+    const fallback = getDemoQuote(symbol, assetClass);
+    return { ...fallback, provider: `${fallback.provider} · live provider unavailable` };
+  }
 }
 
 export function estimateExecution(quote: ReturnType<typeof getDemoQuote>, side: "buy" | "sell", quantity: number) {

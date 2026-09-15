@@ -12,7 +12,7 @@ Users may create multiple isolated portfolios, transfer cash between them, archi
 
 ## Portfolio creation and onboarding
 
-Onboarding creates a portfolio, selects starting capital, benchmark, allocation targets, data provider, theme, and optional Advanced Derivatives access. Starting capital must be at least $1,000; the suggested value is $500,000. The first ledger event records that capital and is never edited in place.
+Onboarding creates a portfolio and selects starting capital, theme, and optional Advanced Derivatives access. Starting capital must be at least $1,000; the suggested value is $500,000. The first ledger event records that capital and is never edited in place. Benchmark selection happens only after the user enters the app, where each portfolio can maintain a comparison set instead of being forced into one primary benchmark.
 
 The app works immediately with explicit demonstration data. Provider setup explains free Alpaca, public crypto, and delayed fallback coverage without presenting delayed or indicative data as live.
 
@@ -52,7 +52,7 @@ Provider adapters normalize instrument identity, bid, ask, last, mark, timestamp
 
 ## Product surfaces
 
-- Overview: equity, cash, buying power, P&L, exposure, allocation drift, benchmark, expirations, and warnings.
+- Overview: equity, cash, buying power, P&L, exposure, allocation drift, multi-benchmark comparisons, expirations, and warnings.
 - Trade: instrument search, multi-asset order ticket, estimated fill, and buying-power preview.
 - Positions: grouped live marks, lots, cost basis, margin, lifecycle, and Greeks.
 - Markets: watchlists, charts, futures curves, options chains, timestamps, and provider status.

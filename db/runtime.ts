@@ -16,6 +16,10 @@ const schemaStatements = [
     option_right TEXT, exercise_style TEXT, settlement_type TEXT, active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS portfolio_benchmarks (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, symbol TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS orders (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
     order_type TEXT NOT NULL, time_in_force TEXT NOT NULL, status TEXT NOT NULL, quantity TEXT NOT NULL,
@@ -43,10 +47,17 @@ const schemaStatements = [
     effective_at TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS alerts (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT, severity TEXT NOT NULL, event_type TEXT NOT NULL,
+    title TEXT NOT NULL, message TEXT NOT NULL, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_benchmarks_portfolio_symbol ON portfolio_benchmarks(portfolio_id, symbol)`,
+  `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
 ];
 
 export function getD1() {

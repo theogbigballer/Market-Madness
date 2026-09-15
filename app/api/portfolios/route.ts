@@ -7,8 +7,8 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json() as { name?: string; startingCapital?: number; benchmarkSymbol?: string; advancedDerivativesEnabled?: boolean; theme?: string };
-    const result = await createPortfolio({ name: body.name ?? "", startingCapital: Number(body.startingCapital), benchmarkSymbol: body.benchmarkSymbol, advancedDerivativesEnabled: body.advancedDerivativesEnabled, theme: body.theme });
+    const body = await request.json() as { name?: string; startingCapital?: number; advancedDerivativesEnabled?: boolean; theme?: string };
+    const result = await createPortfolio({ name: body.name ?? "", startingCapital: Number(body.startingCapital), advancedDerivativesEnabled: body.advancedDerivativesEnabled, theme: body.theme });
     return Response.json(result, { status: 201 });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to create portfolio." }, { status: 400 }); }
 }
