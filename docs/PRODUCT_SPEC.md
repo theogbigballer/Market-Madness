@@ -24,7 +24,7 @@ When the app resumes after being offline, it processes only relevant missed even
 
 ## Orders and execution
 
-Supported orders are market, limit, stop, stop-limit, and atomic multi-leg option limits, with Day and GTC duration. Small orders fill immediately from bid/ask. Larger orders receive deterministic spread, size, liquidity, and volatility impact. The preview discloses reference price, estimated price, slippage, volume assumptions, cash impact, margin impact, and rejection reason.
+Supported single-leg orders are market, limit, stop, and stop-limit, with Day and GTC duration. Atomic multi-leg option market orders support two to four editable legs, net-debit or net-credit pricing, combined buying-power checks, and closed-session queuing. Small orders fill immediately from bid/ask. Larger single-leg orders receive deterministic spread, size, liquidity, and volatility impact. The preview discloses reference price, estimated price, slippage, cash impact, margin impact, and rejection reason.
 
 States are draft, submitted, scheduled, accepted, partially filled, filled, canceled, expired, or rejected. All explicit commissions and fees default to zero but remain configurable. Spread and market impact always remain active.
 
@@ -36,7 +36,7 @@ Maintenance deficiencies immediately cancel reserving orders and initiate forced
 
 ## Derivatives
 
-Advanced Derivatives gates naked short options but not ordinary defined-risk positions. Both American and European contracts are supported. American holders may request early exercise; deterministic economic rules model early assignment. At expiration, any contract at least $0.01 in the money auto-exercises. Exercise, assignment, resulting underlying positions, and liquidation are distinct ledger events.
+Advanced Derivatives gates naked short options but not ordinary defined-risk positions. Both American and European contracts are supported. American holders may request in-session early exercise; deterministic economic rules will model early assignment in a later lifecycle pass. At expiration, any contract at least $0.01 in the money auto-exercises. Exercise, assignment, resulting underlying positions, and liquidation are distinct ledger events.
 
 Cash-settled derivatives post cash directly. Physically settled options create or remove underlying positions. Physically delivered futures must be closed before first notice; cash-settled futures settle normally. Rolls are manual with alerts and a one-click roll ticket.
 

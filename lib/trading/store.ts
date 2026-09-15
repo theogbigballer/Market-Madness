@@ -6,6 +6,8 @@ import { findFuture, forwardSymbol, getCmeSession, getForwardQuote, getFutureQuo
 import type { OptionContract } from "../market/options";
 import { getOptionQuote, optionSymbol } from "../market/options";
 import { estimateExecution, getMarketQuote } from "../market/quotes";
+import type { OptionStrategyLeg } from "./strategies";
+import { previewOptionStrategy } from "./strategies";
 
 type PortfolioRow = { id: string; name: string; starting_capital: string; benchmark_symbol: string | null; advanced_derivatives_enabled: number; theme: string; created_at: string };
 type LotRow = { id: string; instrument_id: string; remaining_quantity: string; cost_basis: string; opened_at: string; symbol: string; display_name: string; asset_class: AssetClass; multiplier: string; underlying_instrument_id: string | null; expiration_at: string | null; first_notice_at: string | null; strike: string | null; option_right: "call" | "put" | null; exercise_style: "american" | "european" | null; settlement_type: "cash" | "physical" | null };
@@ -133,7 +135,8 @@ async function reservedBuyingPower(portfolioId: string) {
   const result = await getD1().prepare(`SELECT o.id, o.instrument_id, o.side, o.order_type, o.time_in_force, o.quantity, o.limit_price, o.stop_price,
       i.symbol, i.display_name, i.asset_class, i.multiplier, i.underlying_instrument_id, i.expiration_at, i.first_notice_at, i.strike, i.option_right, i.exercise_style, i.settlement_type
     FROM orders o JOIN instruments i ON i.id = o.instrument_id
-    WHERE o.portfolio_id = ? AND o.status IN ('scheduled', 'accepted', 'submitted')`).bind(portfolioId).all<ActiveOrderRow>();
+    WHERE o.portfolio_id = ? AND o.status IN ('scheduled', 'accepted', 'submitted')
+      AND NOT EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = o.id)`).bind(portfolioId).all<ActiveOrderRow>();
   let reserved = 0;
   for (const order of result.results) {
     const quote = await quoteForInstrument(order), quantity = Number(order.quantity), multiplier = Number(order.multiplier);
@@ -147,7 +150,56 @@ async function reservedBuyingPower(portfolioId: string) {
     else if (order.asset_class === "forward") reserved += Number(quote.mark) * quantity * 0.1;
     else reserved += Number(order.limit_price || quote.ask || quote.mark) * quantity * multiplier;
   }
+  const strategies = await getD1().prepare("SELECT id, quantity FROM orders WHERE portfolio_id = ? AND status IN ('scheduled', 'accepted', 'submitted') AND EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = orders.id)").bind(portfolioId).all<{ id: string; quantity: string }>();
+  for (const strategy of strategies.results) {
+    const legs = await strategyLegs(strategy.id);
+    const preview = await previewOptionStrategy(legs, Number(strategy.quantity));
+    reserved += preview.maxLoss ?? Math.max(0, preview.netDebit) + Number(preview.legs[0].analytics.spot) * 100 * Number(strategy.quantity) * 0.2;
+  }
   return reserved;
+}
+
+async function strategyLegs(orderId: string): Promise<OptionStrategyLeg[]> {
+  const result = await getD1().prepare(`SELECT ol.side, ol.ratio_quantity, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style
+    FROM order_legs ol JOIN instruments i ON i.id = ol.instrument_id WHERE ol.order_id = ? ORDER BY ol.id`).bind(orderId)
+    .all<{ side: "buy" | "sell"; ratio_quantity: string; underlying_instrument_id: string; expiration_at: string; strike: string; option_right: "call" | "put"; exercise_style: "american" | "european" }>();
+  return result.results.map((leg) => ({ side: leg.side, ratio: Number(leg.ratio_quantity), contract: { underlying: leg.underlying_instrument_id.replace("equity:", ""), expiration: leg.expiration_at.slice(0, 10), strike: Number(leg.strike), right: leg.option_right, exerciseStyle: leg.exercise_style } }));
+}
+
+async function executeOptionStrategyOrder(portfolioId: string, orderId: string) {
+  if (!getUsEquitySession().isOpen) return false;
+  const db = getD1(), order = await db.prepare("SELECT id, quantity, status FROM orders WHERE id = ? AND portfolio_id = ? AND status IN ('scheduled', 'accepted')").bind(orderId, portfolioId).first<{ id: string; quantity: string; status: string }>();
+  if (!order) return false;
+  const legs = await strategyLegs(orderId), preview = await previewOptionStrategy(legs, Number(order.quantity));
+  const currentLots = await openLots(portfolioId), now = new Date().toISOString(), statements = [
+    db.prepare("UPDATE orders SET status = 'filled', filled_quantity = quantity, scheduled_for = NULL, updated_at = ? WHERE id = ?").bind(now, orderId),
+  ];
+  let netCash = 0;
+  for (const leg of preview.legs) {
+    const instrumentId = `option:${leg.symbol}`, quantity = leg.ratio * preview.units, signedQuantity = leg.side === "buy" ? quantity : -quantity, fillId = crypto.randomUUID();
+    statements.push(db.prepare("INSERT INTO fills (id, order_id, portfolio_id, instrument_id, quantity, price, slippage, liquidity_model, executed_at) VALUES (?, ?, ?, ?, ?, ?, '0', 'atomic multi-leg option execution', ?)").bind(fillId, orderId, portfolioId, instrumentId, quantity.toString(), leg.executionPrice.toFixed(2), now));
+    let remaining = signedQuantity;
+    for (const lot of currentLots.filter((item) => item.instrument_id === instrumentId && Number(item.remaining_quantity) * signedQuantity < 0)) {
+      if (Math.abs(remaining) < 1e-9) break;
+      const lotQuantity = Number(lot.remaining_quantity), closed = Math.min(Math.abs(remaining), Math.abs(lotQuantity));
+      const next = lotQuantity + Math.sign(remaining) * closed;
+      remaining -= Math.sign(remaining) * closed;
+      lot.remaining_quantity = next.toString();
+      statements.push(db.prepare("UPDATE position_lots SET remaining_quantity = ?, closed_at = ? WHERE id = ?").bind(next.toString(), Math.abs(next) < 1e-9 ? now : null, lot.id));
+    }
+    if (Math.abs(remaining) > 1e-9) statements.push(db.prepare("INSERT INTO position_lots (id, portfolio_id, instrument_id, opening_fill_id, original_quantity, remaining_quantity, cost_basis, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, instrumentId, fillId, remaining.toString(), remaining.toString(), leg.executionPrice.toFixed(2), now));
+    netCash += (leg.side === "buy" ? -1 : 1) * leg.executionPrice * quantity * 100;
+  }
+  statements.push(db.prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, related_entity_type, related_entity_id, description, effective_at, idempotency_key) VALUES (?, ?, 'trade', ?, 'order', ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, netCash.toFixed(2), orderId, `${preview.legs.length}-leg ${preview.underlying} option strategy`, now, `strategy-fill:${orderId}`));
+  await db.batch(statements);
+  return true;
+}
+
+async function processOptionStrategyOrders(portfolioId: string) {
+  if (!getUsEquitySession().isOpen) return;
+  const now = new Date().toISOString();
+  const result = await getD1().prepare("SELECT id FROM orders WHERE portfolio_id = ? AND (status = 'accepted' OR (status = 'scheduled' AND scheduled_for <= ?)) AND EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = orders.id) ORDER BY created_at").bind(portfolioId, now).all<{ id: string }>();
+  for (const order of result.results) await executeOptionStrategyOrder(portfolioId, order.id);
 }
 
 async function processActiveOrders(portfolioId: string) {
@@ -155,7 +207,8 @@ async function processActiveOrders(portfolioId: string) {
   const result = await db.prepare(`SELECT o.id, o.instrument_id, o.side, o.order_type, o.time_in_force, o.quantity, o.limit_price, o.stop_price,
       i.symbol, i.display_name, i.asset_class, i.multiplier, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style
     FROM orders o JOIN instruments i ON i.id = o.instrument_id
-    WHERE o.portfolio_id = ? AND (o.status = 'accepted' OR (o.status = 'scheduled' AND o.scheduled_for <= ?)) ORDER BY o.created_at`)
+    WHERE o.portfolio_id = ? AND (o.status = 'accepted' OR (o.status = 'scheduled' AND o.scheduled_for <= ?))
+      AND NOT EXISTS (SELECT 1 FROM order_legs ol WHERE ol.order_id = o.id) ORDER BY o.created_at`)
     .bind(portfolioId, now).all<ActiveOrderRow>();
   for (const order of result.results) {
     if ((order.asset_class === "equity" || order.asset_class === "option") && !equitySession.isOpen) continue;
@@ -287,6 +340,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   await ensureCoreSchema();
   await processDerivativeSettlements(portfolioId);
   await processOptionExpirations(portfolioId);
+  await processOptionStrategyOrders(portfolioId);
   await processActiveOrders(portfolioId);
   const portfolio = await getD1().prepare("SELECT id, name, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, created_at FROM portfolios WHERE id = ? AND status = 'active'").bind(portfolioId).first<PortfolioRow>();
   if (!portfolio) throw new Error("Portfolio not found.");
@@ -297,7 +351,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
       .bind(portfolioId).all<{ id: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; scheduled_for: string | null; created_at: string; symbol: string }>(),
   ]);
 
-  const grouped = new Map<string, { symbol: string; name: string; assetClass: AssetClass; quantity: number; basisNumerator: number; multiplier: number; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract }>();
+  const grouped = new Map<string, { instrumentId: string; symbol: string; name: string; assetClass: AssetClass; quantity: number; basisNumerator: number; multiplier: number; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract }>();
   for (const lot of lots) {
     const quantity = Number(lot.remaining_quantity), multiplier = Number(lot.multiplier);
     const optionContract = lot.asset_class === "option" && lot.expiration_at && lot.strike && lot.option_right && lot.exercise_style
@@ -307,7 +361,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
     const forwardContract = lot.asset_class === "forward" && lot.expiration_at && lot.strike && lot.underlying_instrument_id
       ? { underlying: lot.underlying_instrument_id.replace(/^(equity|crypto):/, ""), deliveryDate: lot.expiration_at.slice(0, 10), deliveryPrice: Number(lot.strike), quantityUnit: "units" }
       : undefined;
-    const current = grouped.get(lot.instrument_id) ?? { symbol: lot.symbol, name: lot.display_name, assetClass: lot.asset_class, quantity: 0, basisNumerator: 0, multiplier, optionContract, futureContract, forwardContract };
+    const current = grouped.get(lot.instrument_id) ?? { instrumentId: lot.instrument_id, symbol: lot.symbol, name: lot.display_name, assetClass: lot.asset_class, quantity: 0, basisNumerator: 0, multiplier, optionContract, futureContract, forwardContract };
     current.quantity += quantity;
     current.basisNumerator += Number(lot.cost_basis) * quantity;
     grouped.set(lot.instrument_id, current);
@@ -325,7 +379,8 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
     marketValue += position.assetClass === "future" || position.assetClass === "forward" ? pnl : value; grossExposure += Math.abs(value);
     maintenanceMargin += position.assetClass === "future" && position.futureContract ? Math.abs(position.quantity) * position.futureContract.maintenanceMargin
       : position.assetClass === "forward" ? Math.abs(value) * 0.1 : Math.abs(value) * (position.quantity < 0 ? 0.3 : 0.25);
-    return { ...position, mark, averageCost, marketValue: value, unrealizedPnl: pnl, quote };
+    const optionAnalytics = position.assetClass === "option" && position.optionContract && "analytics" in quote ? quote.analytics : undefined;
+    return { ...position, mark, averageCost, marketValue: value, unrealizedPnl: pnl, quote, optionGreeks: optionAnalytics?.greeks, underlyingSpot: optionAnalytics?.spot };
   }));
   const netLiquidationValue = cash + marketValue;
   const reservedForOrders = await reservedBuyingPower(portfolioId);
@@ -349,15 +404,90 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   ]);
   const largestPosition = positions.reduce<{ symbol: string; value: number } | null>((largest, position) => !largest || Math.abs(position.marketValue) > largest.value ? { symbol: position.symbol, value: Math.abs(position.marketValue) } : largest, null);
   const estimatedDailyVar = positions.reduce((sum, position) => sum + Math.abs(position.marketValue) * (position.assetClass === "crypto" ? 0.05 : position.assetClass === "option" ? 0.08 : position.assetClass === "future" ? 0.025 : 0.018), 0);
+  const greeks = positions.reduce((total, position) => {
+    if (!position.optionGreeks) return total;
+    const scale = position.quantity * position.multiplier;
+    total.delta += position.optionGreeks.delta * scale; total.gamma += position.optionGreeks.gamma * scale;
+    total.theta += position.optionGreeks.theta * scale; total.vega += position.optionGreeks.vega * scale;
+    return total;
+  }, { delta: 0, gamma: 0, theta: 0, vega: 0 });
+  const scenarios = [-0.1, -0.05, 0.05, 0.1].map((shock) => ({ shock, estimatedPnl: positions.reduce((sum, position) => {
+    if (position.assetClass === "option" && position.optionGreeks && position.optionContract) {
+      const underlyingMove = (position.underlyingSpot || 0) * shock;
+      return sum + position.optionGreeks.delta * underlyingMove * position.quantity * position.multiplier + 0.5 * position.optionGreeks.gamma * underlyingMove * underlyingMove * position.quantity * position.multiplier;
+    }
+    return sum + position.marketValue * shock;
+  }, 0) }));
   return {
     portfolio: { id: portfolio.id, name: portfolio.name, startingCapital, advancedDerivativesEnabled: Boolean(portfolio.advanced_derivatives_enabled), theme: portfolio.theme },
     account: { cash, marketValue, netLiquidationValue, totalPnl, totalReturn: startingCapital ? totalPnl / startingCapital : 0, buyingPower, reservedBuyingPower: reservedForOrders, grossExposure, maintenanceMargin, marginUtilization: netLiquidationValue > 0 ? maintenanceMargin / netLiquidationValue : 0 },
     positions, orders: orderResult.results, benchmarks: await getBenchmarks(portfolioId), allocations: await getAllocations(portfolioId), session,
     pnlHistory: snapshotResult.results.map((item) => ({ date: item.snapshot_date, netLiquidationValue: Number(item.net_liquidation_value), realizedPnl: Number(item.realized_pnl), unrealizedPnl: Number(item.unrealized_pnl) })).reverse(),
-    risk: { leverage: netLiquidationValue > 0 ? grossExposure / netLiquidationValue : 0, estimatedDailyVar, largestPosition: largestPosition ? { ...largestPosition, concentration: grossExposure ? largestPosition.value / grossExposure : 0 } : null },
+    risk: { leverage: netLiquidationValue > 0 ? grossExposure / netLiquidationValue : 0, estimatedDailyVar, largestPosition: largestPosition ? { ...largestPosition, concentration: grossExposure ? largestPosition.value / grossExposure : 0 } : null, greeks, scenarios },
     alerts: alertResult.results,
     quoteStatus: { provider: positions[0]?.quote.provider || "Provider routing active", quality: positions[0]?.quote.quality || "ready", refreshedAt: new Date().toISOString() },
   };
+}
+
+export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[] }) {
+  await ensureCoreSchema();
+  const preview = await previewOptionStrategy(input.legs, input.units);
+  const dashboard = await getDashboard(input.portfolioId) as { portfolio: { advancedDerivativesEnabled: boolean }; account: { buyingPower: number } };
+  if (preview.unboundedRisk && !dashboard.portfolio.advancedDerivativesEnabled) throw new Error("A strategy with uncovered call risk requires Advanced Derivatives.");
+  const required = preview.maxLoss ?? Math.max(0, preview.netDebit) + preview.legs[0].analytics.spot * 100 * input.units * 0.2;
+  if (required > dashboard.account.buyingPower + 0.005) throw new Error(`Insufficient buying power. This strategy requires approximately $${required.toLocaleString("en-US", { maximumFractionDigits: 2 })}.`);
+  const session = getUsEquitySession(), status = session.isOpen ? "accepted" : "scheduled", now = new Date().toISOString(), orderId = crypto.randomUUID(), db = getD1();
+  const statements = [];
+  for (const leg of preview.legs) {
+    const instrumentId = `option:${leg.symbol}`;
+    statements.push(db.prepare(`INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, underlying_instrument_id, expiration_at, strike, option_right, exercise_style, settlement_type)
+      VALUES (?, ?, ?, 'option', 'US', 'XNYS', '100', ?, ?, ?, ?, ?, 'physical')`).bind(instrumentId, leg.symbol, `${preview.underlying} ${leg.contract.expiration} ${leg.contract.strike} ${leg.contract.right.toUpperCase()} · ${leg.contract.exerciseStyle}`, `equity:${preview.underlying}`, `${leg.contract.expiration}T20:00:00.000Z`, leg.contract.strike.toString(), leg.contract.right, leg.contract.exerciseStyle));
+  }
+  const first = preview.legs[0];
+  statements.push(db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, scheduled_for, submitted_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'market', 'day', ?, ?, '0', ?, ?, ?, ?)`).bind(orderId, input.portfolioId, `option:${first.symbol}`, preview.netDebit >= 0 ? "buy" : "sell", status, input.units.toString(), status === "scheduled" ? session.nextOpenAt : null, now, now, now));
+  for (const leg of preview.legs) statements.push(db.prepare("INSERT INTO order_legs (id, order_id, instrument_id, side, ratio_quantity) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), orderId, `option:${leg.symbol}`, leg.side, leg.ratio.toString()));
+  await db.batch(statements);
+  if (session.isOpen) await executeOptionStrategyOrder(input.portfolioId, orderId);
+  return { orderId, status: session.isOpen ? "filled" : "scheduled", scheduledFor: session.isOpen ? null : session.nextOpenAt, preview };
+}
+
+export async function exerciseAmericanOption(input: { portfolioId: string; instrumentId: string; quantity: number }) {
+  await ensureCoreSchema();
+  if (!getUsEquitySession().isOpen) throw new Error("Manual exercise is available only during the US regular session.");
+  if (!Number.isInteger(input.quantity) || input.quantity < 1) throw new Error("Exercise quantity must be a positive whole number.");
+  const db = getD1();
+  const instrument = await db.prepare("SELECT symbol, underlying_instrument_id, strike, option_right, exercise_style, expiration_at FROM instruments WHERE id = ? AND asset_class = 'option'").bind(input.instrumentId).first<{ symbol: string; underlying_instrument_id: string; strike: string; option_right: "call" | "put"; exercise_style: "american" | "european"; expiration_at: string }>();
+  if (!instrument) throw new Error("Option contract not found.");
+  if (instrument.exercise_style !== "american") throw new Error("European options can only be exercised at expiration.");
+  if (new Date(instrument.expiration_at).getTime() <= Date.now()) throw new Error("This contract is already at expiration and will be processed automatically.");
+  const lots = await db.prepare("SELECT id, remaining_quantity, cost_basis FROM position_lots WHERE portfolio_id = ? AND instrument_id = ? AND CAST(remaining_quantity AS REAL) > 0 ORDER BY opened_at").bind(input.portfolioId, input.instrumentId).all<{ id: string; remaining_quantity: string; cost_basis: string }>();
+  const available = lots.results.reduce((sum, lot) => sum + Number(lot.remaining_quantity), 0);
+  if (input.quantity > available) throw new Error(`Only ${available} long contracts are available to exercise.`);
+  const underlyingSymbol = instrument.underlying_instrument_id.replace("equity:", ""), underlyingQuote = await getMarketQuote(underlyingSymbol, "equity"), strike = Number(instrument.strike), spot = Number(underlyingQuote.mark);
+  const intrinsic = instrument.option_right === "call" ? spot - strike : strike - spot;
+  if (intrinsic < 0.01) throw new Error("Only options at least $0.01 in the money can be exercised.");
+  const now = new Date().toISOString(), orderId = crypto.randomUUID(), underlyingQuantity = (instrument.option_right === "call" ? 1 : -1) * input.quantity * 100, side = underlyingQuantity > 0 ? "buy" : "sell", fillId = crypto.randomUUID();
+  const statements = [
+    db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id) VALUES (?, ?, ?, 'equity', 'US', 'XNYS')").bind(instrument.underlying_instrument_id, underlyingSymbol, underlyingQuote.name),
+    db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, reconstruction_status, submitted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'market', 'day', 'filled', ?, ?, 'reconstructed', ?, ?, ?)`).bind(orderId, input.portfolioId, instrument.underlying_instrument_id, side, Math.abs(underlyingQuantity).toString(), Math.abs(underlyingQuantity).toString(), now, now, now),
+    db.prepare("INSERT INTO fills (id, order_id, portfolio_id, instrument_id, quantity, price, slippage, liquidity_model, executed_at) VALUES (?, ?, ?, ?, ?, ?, '0', 'manual American option exercise', ?)").bind(fillId, orderId, input.portfolioId, instrument.underlying_instrument_id, Math.abs(underlyingQuantity).toString(), strike.toFixed(2), now),
+  ];
+  let remaining = input.quantity, premiumBasis = 0;
+  for (const lot of lots.results) {
+    if (!remaining) break;
+    const lotQuantity = Number(lot.remaining_quantity), exercised = Math.min(remaining, lotQuantity), next = lotQuantity - exercised;
+    remaining -= exercised; premiumBasis += Number(lot.cost_basis) * exercised;
+    statements.push(db.prepare("UPDATE position_lots SET remaining_quantity = ?, closed_at = ? WHERE id = ?").bind(next.toString(), next === 0 ? now : null, lot.id));
+  }
+  const averagePremium = premiumBasis / input.quantity, underlyingBasis = instrument.option_right === "call" ? strike + averagePremium : strike - averagePremium;
+  statements.push(
+    db.prepare("INSERT INTO position_lots (id, portfolio_id, instrument_id, opening_fill_id, original_quantity, remaining_quantity, cost_basis, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), input.portfolioId, instrument.underlying_instrument_id, fillId, underlyingQuantity.toString(), underlyingQuantity.toString(), underlyingBasis.toFixed(2), now),
+    db.prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, related_entity_type, related_entity_id, description, effective_at, idempotency_key) VALUES (?, ?, 'exercise', ?, 'fill', ?, ?, ?, ?)").bind(crypto.randomUUID(), input.portfolioId, (-underlyingQuantity * strike).toFixed(2), fillId, `${input.quantity} ${instrument.symbol} manually exercised`, now, `manual-exercise:${orderId}`),
+    db.prepare("INSERT INTO alerts (id, portfolio_id, severity, event_type, title, message) VALUES (?, ?, 'warning', 'option_exercise', 'American option exercised', ?)").bind(crypto.randomUUID(), input.portfolioId, `${input.quantity} ${instrument.symbol} exercised into ${Math.abs(underlyingQuantity)} ${underlyingSymbol} shares.`),
+  );
+  await db.batch(statements);
+  return { status: "exercised", quantity: input.quantity, underlyingQuantity };
 }
 
 export async function placeOrder(input: { portfolioId: string; symbol: string; assetClass: AssetClass; side: "buy" | "sell"; orderType: "market" | "limit" | "stop" | "stop_limit"; quantity: number; limitPrice?: number; stopPrice?: number; timeInForce: "day" | "gtc"; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract }) {
