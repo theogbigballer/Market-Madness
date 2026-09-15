@@ -89,6 +89,7 @@ export async function permanentlyDeletePortfolio(portfolioId: string) {
   const db = getD1();
   await db.batch([
     db.prepare("DELETE FROM alerts WHERE portfolio_id = ?").bind(portfolioId),
+    db.prepare("DELETE FROM performance_observations WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM portfolio_snapshots WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM portfolio_benchmarks WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM allocations WHERE portfolio_id = ?").bind(portfolioId),
@@ -106,6 +107,52 @@ export async function permanentlyDeletePortfolio(portfolioId: string) {
 async function cashBalance(portfolioId: string) {
   const result = await getD1().prepare("SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS cash FROM cash_ledger WHERE portfolio_id = ?").bind(portfolioId).first<{ cash: number }>();
   return Number(result?.cash ?? 0);
+}
+
+async function externalCashFlows(portfolioId: string) {
+  const result = await getD1().prepare("SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS amount FROM cash_ledger WHERE portfolio_id = ? AND event_type IN ('deposit', 'withdrawal', 'transfer')").bind(portfolioId).first<{ amount: number }>();
+  return Number(result?.amount ?? 0);
+}
+
+function newYorkDayStart(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const localNoonUtc = Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day), 12);
+  const zonedNoon = new Date(new Date(localNoonUtc).toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const offset = localNoonUtc - zonedNoon.getTime();
+  return new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)) + offset).toISOString();
+}
+
+async function recordPerformanceObservations(portfolioId: string, portfolioIndexValue: number, benchmarks: { symbol: string; quote: { mark: string; quality: string } }[]) {
+  const db = getD1(), bucket = new Date(Math.floor(Date.now() / 30_000) * 30_000).toISOString();
+  const rows = [{ key: "PORTFOLIO", value: portfolioIndexValue, quality: "ledger" }, ...benchmarks.map((benchmark) => ({ key: benchmark.symbol, value: Number(benchmark.quote.mark), quality: benchmark.quote.quality }))];
+  await db.batch(rows.map((row) => db.prepare("INSERT OR IGNORE INTO performance_observations (id, portfolio_id, series_key, value, quality, observed_at) VALUES (?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, row.key, row.value.toFixed(6), row.quality, bucket)));
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  await db.prepare("DELETE FROM performance_observations WHERE portfolio_id = ? AND observed_at < ?").bind(portfolioId, cutoff).run();
+}
+
+async function getPerformanceSeries(portfolioId: string, selectedSymbols: string[]) {
+  const keys = ["PORTFOLIO", ...selectedSymbols], placeholders = keys.map(() => "?").join(",");
+  const result = await getD1().prepare(`SELECT series_key, value, quality, observed_at FROM performance_observations WHERE portfolio_id = ? AND observed_at >= ? AND series_key IN (${placeholders}) ORDER BY observed_at`).bind(portfolioId, newYorkDayStart(), ...keys).all<{ series_key: string; value: string; quality: string; observed_at: string }>();
+  return keys.map((key) => {
+    const rows = result.results.filter((row) => row.series_key === key), baseline = Number(rows[0]?.value || 0);
+    const points = rows.map((row) => ({ at: row.observed_at, value: Number(row.value), return: baseline ? Number(row.value) / baseline - 1 : 0 }));
+    return { key, label: key === "PORTFOLIO" ? "Portfolio" : key, quality: rows.at(-1)?.quality || "pending", return: points.at(-1)?.return || 0, points };
+  });
+}
+
+async function getLedgerReport(portfolioId: string, realizedPnl: number) {
+  const db = getD1();
+  const [transactions, totals] = await Promise.all([
+    db.prepare("SELECT id, event_type, amount, description, effective_at FROM cash_ledger WHERE portfolio_id = ? ORDER BY effective_at DESC, created_at DESC LIMIT 100").bind(portfolioId).all<{ id: string; event_type: string; amount: string; description: string; effective_at: string }>(),
+    db.prepare("SELECT event_type, SUM(CAST(amount AS REAL)) AS amount FROM cash_ledger WHERE portfolio_id = ? GROUP BY event_type").bind(portfolioId).all<{ event_type: string; amount: number }>(),
+  ]);
+  const byType = Object.fromEntries(totals.results.map((row) => [row.event_type, Number(row.amount)]));
+  const dividends = byType.dividend || 0, settlements = byType.settlement || 0, externalFlows = (byType.deposit || 0) + (byType.withdrawal || 0) + (byType.transfer || 0);
+  return {
+    transactions: transactions.results.map((row) => ({ id: row.id, eventType: row.event_type, amount: Number(row.amount), description: row.description, effectiveAt: row.effective_at })),
+    attribution: { trading: realizedPnl - dividends - settlements, dividends, settlements, externalFlows },
+  };
 }
 
 async function openLots(portfolioId: string) {
@@ -454,8 +501,8 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   await processActiveOrders(portfolioId);
   const portfolio = await getD1().prepare("SELECT id, name, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, created_at FROM portfolios WHERE id = ? AND status = 'active'").bind(portfolioId).first<PortfolioRow>();
   if (!portfolio) throw new Error("Portfolio not found.");
-  const [cash, lots, orderResult] = await Promise.all([
-    cashBalance(portfolioId), openLots(portfolioId),
+  const [cash, netExternalFlows, lots, orderResult] = await Promise.all([
+    cashBalance(portfolioId), externalCashFlows(portfolioId), openLots(portfolioId),
     getD1().prepare(`SELECT o.id, o.side, o.order_type, o.status, o.quantity, o.filled_quantity, o.limit_price, o.scheduled_for, o.created_at, i.symbol,
       (SELECT COUNT(*) FROM order_legs ol WHERE ol.order_id = o.id) AS leg_count
       FROM orders o JOIN instruments i ON i.id = o.instrument_id WHERE o.portfolio_id = ? ORDER BY o.created_at DESC LIMIT 12`)
@@ -497,7 +544,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   const reservedForOrders = await reservedBuyingPower(portfolioId);
   const buyingPower = Math.max(0, netLiquidationValue * 2 - grossExposure - reservedForOrders);
   const startingCapital = Number(portfolio.starting_capital);
-  const totalPnl = netLiquidationValue - startingCapital;
+  const totalPnl = netLiquidationValue - startingCapital - netExternalFlows;
   if (!afterLiquidation && maintenanceMargin > 0 && netLiquidationValue < maintenanceMargin * 1.1) {
     await forceMarginLiquidation(portfolioId, netLiquidationValue, maintenanceMargin, lots);
     return getDashboard(portfolioId, true);
@@ -509,9 +556,13 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(portfolio_id, snapshot_date) DO UPDATE SET net_liquidation_value = excluded.net_liquidation_value,
     cash = excluded.cash, realized_pnl = excluded.realized_pnl, unrealized_pnl = excluded.unrealized_pnl, margin_requirement = excluded.margin_requirement, buying_power = excluded.buying_power`)
     .bind(crypto.randomUUID(), portfolioId, snapshotDate, netLiquidationValue.toFixed(2), cash.toFixed(2), realizedPnl.toFixed(2), unrealizedPnl.toFixed(2), maintenanceMargin.toFixed(2), buyingPower.toFixed(2)).run();
-  const [snapshotResult, alertResult] = await Promise.all([
+  const benchmarks = await getBenchmarks(portfolioId);
+  await recordPerformanceObservations(portfolioId, netLiquidationValue - netExternalFlows, benchmarks);
+  const [snapshotResult, alertResult, performanceSeries, ledgerReport] = await Promise.all([
     getD1().prepare("SELECT snapshot_date, net_liquidation_value, realized_pnl, unrealized_pnl FROM portfolio_snapshots WHERE portfolio_id = ? ORDER BY snapshot_date DESC LIMIT 30").bind(portfolioId).all<{ snapshot_date: string; net_liquidation_value: string; realized_pnl: string; unrealized_pnl: string }>(),
     getD1().prepare("SELECT id, severity, event_type, title, message, created_at FROM alerts WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT 12").bind(portfolioId).all<{ id: string; severity: string; event_type: string; title: string; message: string; created_at: string }>(),
+    getPerformanceSeries(portfolioId, benchmarks.map((benchmark) => benchmark.symbol)),
+    getLedgerReport(portfolioId, realizedPnl),
   ]);
   const largestPosition = positions.reduce<{ symbol: string; value: number } | null>((largest, position) => !largest || Math.abs(position.marketValue) > largest.value ? { symbol: position.symbol, value: Math.abs(position.marketValue) } : largest, null);
   const estimatedDailyVar = positions.reduce((sum, position) => sum + Math.abs(position.marketValue) * (position.assetClass === "crypto" ? 0.05 : position.assetClass === "option" ? 0.08 : position.assetClass === "future" ? 0.025 : 0.018), 0);
@@ -531,13 +582,32 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   }, 0) }));
   return {
     portfolio: { id: portfolio.id, name: portfolio.name, startingCapital, advancedDerivativesEnabled: Boolean(portfolio.advanced_derivatives_enabled), theme: portfolio.theme },
-    account: { cash, marketValue, netLiquidationValue, totalPnl, totalReturn: startingCapital ? totalPnl / startingCapital : 0, buyingPower, reservedBuyingPower: reservedForOrders, grossExposure, maintenanceMargin, marginUtilization: netLiquidationValue > 0 ? maintenanceMargin / netLiquidationValue : 0 },
-    positions, orders: orderResult.results, benchmarks: await getBenchmarks(portfolioId), allocations: await getAllocations(portfolioId), corporateActions: await listCorporateActions(), session,
+    account: { cash, marketValue, netLiquidationValue, totalPnl, totalReturn: startingCapital ? totalPnl / startingCapital : 0, netExternalFlows, buyingPower, reservedBuyingPower: reservedForOrders, grossExposure, maintenanceMargin, marginUtilization: netLiquidationValue > 0 ? maintenanceMargin / netLiquidationValue : 0 },
+    positions, orders: orderResult.results, benchmarks, performanceSeries, ledgerReport, allocations: await getAllocations(portfolioId), corporateActions: await listCorporateActions(), session,
     pnlHistory: snapshotResult.results.map((item) => ({ date: item.snapshot_date, netLiquidationValue: Number(item.net_liquidation_value), realizedPnl: Number(item.realized_pnl), unrealizedPnl: Number(item.unrealized_pnl) })).reverse(),
     risk: { leverage: netLiquidationValue > 0 ? grossExposure / netLiquidationValue : 0, estimatedDailyVar, largestPosition: largestPosition ? { ...largestPosition, concentration: grossExposure ? largestPosition.value / grossExposure : 0 } : null, greeks, scenarios },
     alerts: alertResult.results,
     quoteStatus: { provider: positions[0]?.quote.provider || "Provider routing active", quality: positions[0]?.quote.quality || "ready", refreshedAt: new Date().toISOString() },
   };
+}
+
+function csvCell(value: unknown) { const text = String(value ?? ""); return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text; }
+function toCsv(headers: string[], rows: unknown[][]) { return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n"); }
+
+export async function exportPortfolioCsv(portfolioId: string, report: "transactions" | "positions" | "pnl") {
+  await ensureCoreSchema();
+  const portfolio = await getD1().prepare("SELECT name FROM portfolios WHERE id = ? AND status = 'active'").bind(portfolioId).first<{ name: string }>();
+  if (!portfolio) throw new Error("Portfolio not found.");
+  if (report === "transactions") {
+    const result = await getD1().prepare("SELECT event_type, amount, currency, description, related_entity_type, related_entity_id, effective_at FROM cash_ledger WHERE portfolio_id = ? ORDER BY effective_at, created_at").bind(portfolioId).all<{ event_type: string; amount: string; currency: string; description: string; related_entity_type: string | null; related_entity_id: string | null; effective_at: string }>();
+    return { filename: `${portfolio.name}-transactions.csv`, content: toCsv(["effective_at", "event_type", "amount", "currency", "description", "related_entity_type", "related_entity_id"], result.results.map((row) => [row.effective_at, row.event_type, row.amount, row.currency, row.description, row.related_entity_type, row.related_entity_id])) };
+  }
+  if (report === "pnl") {
+    const result = await getD1().prepare("SELECT snapshot_date, net_liquidation_value, cash, realized_pnl, unrealized_pnl, margin_requirement, buying_power FROM portfolio_snapshots WHERE portfolio_id = ? ORDER BY snapshot_date").bind(portfolioId).all<{ snapshot_date: string; net_liquidation_value: string; cash: string; realized_pnl: string; unrealized_pnl: string; margin_requirement: string; buying_power: string }>();
+    return { filename: `${portfolio.name}-pnl.csv`, content: toCsv(["date", "net_liquidation_value", "cash", "realized_pnl", "unrealized_pnl", "margin_requirement", "buying_power"], result.results.map((row) => [row.snapshot_date, row.net_liquidation_value, row.cash, row.realized_pnl, row.unrealized_pnl, row.margin_requirement, row.buying_power])) };
+  }
+  const dashboard = await getDashboard(portfolioId) as { positions: { symbol: string; name: string; assetClass: string; quantity: number; averageCost: number; mark: number; marketValue: number; unrealizedPnl: number; quote: { quality: string; provider: string; observedAt: string } }[] };
+  return { filename: `${portfolio.name}-positions.csv`, content: toCsv(["symbol", "name", "asset_class", "quantity", "average_cost", "mark", "market_value", "unrealized_pnl", "quote_quality", "quote_provider", "observed_at"], dashboard.positions.map((row) => [row.symbol, row.name, row.assetClass, row.quantity, row.averageCost, row.mark, row.marketValue, row.unrealizedPnl, row.quote.quality, row.quote.provider, row.quote.observedAt])) };
 }
 
 export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[]; orderType?: "market" | "limit"; netLimitPrice?: number }) {

@@ -22,6 +22,13 @@
       "when": 1789481412535,
       "tag": "0002_clean_captain_britain",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789502286282,
+      "tag": "0003_legal_wolverine",
+      "breakpoints": true
     }
   ]
 }

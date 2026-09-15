@@ -66,6 +66,11 @@ const schemaStatements = [
     margin_requirement TEXT NOT NULL, buying_power TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS performance_observations (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, series_key TEXT NOT NULL, value TEXT NOT NULL,
+    quality TEXT NOT NULL, observed_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS processing_events (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, event_type TEXT NOT NULL, effective_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', payload TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, error TEXT,
@@ -86,6 +91,8 @@ const schemaStatements = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_allocations_portfolio_bucket ON allocations(portfolio_id, bucket)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_portfolio_date ON portfolio_snapshots(portfolio_id, snapshot_date)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_performance_observations_bucket ON performance_observations(portfolio_id, series_key, observed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_performance_observations_portfolio_time ON performance_observations(portfolio_id, observed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_order_legs_order ON order_legs(order_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_events_idempotency ON processing_events(idempotency_key)`,
   `CREATE INDEX IF NOT EXISTS idx_processing_events_due ON processing_events(status, effective_at)`,

@@ -46,7 +46,7 @@ Forward creation uses a recognized underlying dropdown and captures direction, q
 
 ## Accounting and P&L
 
-The cash ledger and FIFO position lots are authoritative. Daily P&L equals current equity less previous close equity and net external flows. Reports separate realized, unrealized, fees, FX, settlements, exercise, assignment, dividends, and corporate actions. Daily snapshots and transaction history persist indefinitely; intraday quote cache is retained for 30 days.
+The cash ledger and FIFO position lots are authoritative. Daily and since-inception P&L exclude deposits, withdrawals, and transfers. Reports separate realized, unrealized, trading, settlements, dividends, external flows, exercise, assignment, and corporate actions. Daily snapshots and transaction history persist indefinitely; 30-second portfolio and benchmark observations are retained for 30 days. P&L, positions, and ledger transactions are available as CSV exports.
 
 ## Data providers
 
@@ -54,12 +54,12 @@ Provider adapters normalize instrument identity, bid, ask, last, mark, timestamp
 
 ## Product surfaces
 
-- Overview: equity, cash, buying power, P&L, exposure, allocation drift, multi-benchmark comparisons, expirations, and warnings.
+- Overview: equity, cash, buying power, P&L, exposure, allocation drift, flow-adjusted intraday multi-benchmark comparisons, expirations, and warnings.
 - Trade: instrument search, multi-asset order ticket, estimated fill, and buying-power preview.
 - Positions: grouped live marks, lots, cost basis, margin, lifecycle, and Greeks.
 - Markets: watchlists, charts, futures curves, options chains, timestamps, and provider status.
 - Orders: scheduled, open, partial, filled, rejected, canceled, and reconstructed activity.
-- P&L: daily and cumulative attribution by instrument, asset class, and source.
+- P&L: daily snapshots, realized source attribution, immutable transaction history, and CSV exports.
 - Risk: leverage, concentration, margin utilization, Greeks, delta-adjusted exposure, and shocks.
 - Allocation: targets, ranges, cash reserve, limits, drift, and rebalance analysis.
 - Activity: immutable trade, cash, settlement, exercise, assignment, corporate-action, and liquidation ledger.

@@ -94,6 +94,12 @@ export const portfolioSnapshots = sqliteTable("portfolio_snapshots", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("idx_snapshots_portfolio_date").on(table.portfolioId, table.snapshotDate)]);
 
+export const performanceObservations = sqliteTable("performance_observations", {
+  id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  seriesKey: text("series_key").notNull(), value: text("value").notNull(), quality: text("quality").notNull(),
+  observedAt: text("observed_at").notNull(), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("idx_performance_observations_bucket").on(table.portfolioId, table.seriesKey, table.observedAt), index("idx_performance_observations_portfolio_time").on(table.portfolioId, table.observedAt)]);
+
 export const alerts = sqliteTable("alerts", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").references(() => portfolios.id),
   severity: text("severity", { enum: ["info", "warning", "critical"] }).notNull(), eventType: text("event_type").notNull(),
