@@ -18,10 +18,9 @@ export function supportedSymbols() { return Object.entries(catalog).map(([symbol
 
 export function getDemoQuote(symbolInput: string, assetClass: AssetClass = "equity"): NormalizedQuote & { name: string; averageDailyVolume: number } {
   const symbol = symbolInput.trim().toUpperCase();
-  const item = catalog[symbol];
-  if (!item) throw new Error(`No free demonstration quote is available for ${symbol}.`);
-  const bucket = Math.floor(Date.now() / 30_000);
   const symbolSeed = [...symbol].reduce((total, character) => total + character.charCodeAt(0), 0);
+  const item = catalog[symbol] || { name: `${symbol} simulated instrument`, base: assetClass === "crypto" ? 10 + symbolSeed % 190 : 25 + symbolSeed % 475, spread: assetClass === "crypto" ? 0.12 : 0.05, averageDailyVolume: assetClass === "crypto" ? 50_000 : 2_000_000 };
+  const bucket = Math.floor(Date.now() / 30_000);
   const movement = Math.sin((bucket + symbolSeed) / 9) * item.base * (assetClass === "crypto" ? 0.002 : 0.0007);
   const mark = item.base + movement;
   return {
@@ -42,19 +41,19 @@ async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   });
   if (!response.ok) throw new Error(`Alpaca returned ${response.status}.`);
   const payload = await response.json() as { quote?: { bp?: number; ap?: number; t?: string } };
-  const item = catalog[symbol], bid = payload.quote?.bp, ask = payload.quote?.ap;
-  if (!item || !bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
+  const item = catalog[symbol] || { name: symbol, averageDailyVolume: 2_000_000 }, bid = payload.quote?.bp, ask = payload.quote?.ap;
+  if (!bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
   const mark = (bid + ask) / 2;
   return { instrumentId: `equity:${symbol}`, provider: "Alpaca IEX", quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt: payload.quote?.t || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume };
 }
 
 async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
-  if (symbol !== "BTC-USD") return null;
+  if (!symbol.endsWith("-USD")) return null;
   const response = await fetch(`https://api.exchange.coinbase.com/products/${encodeURIComponent(symbol)}/ticker`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(4_000) });
   if (!response.ok) throw new Error(`Coinbase returned ${response.status}.`);
   const payload = await response.json() as { bid?: string; ask?: string; price?: string; time?: string };
   if (!payload.bid || !payload.ask || !payload.price) throw new Error("Coinbase did not return a complete quote.");
-  const item = catalog[symbol];
+  const item = catalog[symbol] || { name: symbol.replace("-USD", " / US Dollar"), averageDailyVolume: 50_000 };
   return { instrumentId: `crypto:${symbol}`, provider: "Coinbase Exchange", quality: "live", bid: Number(payload.bid).toFixed(2), ask: Number(payload.ask).toFixed(2), last: Number(payload.price).toFixed(2), mark: Number(payload.price).toFixed(2), observedAt: payload.time || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume };
 }
 
