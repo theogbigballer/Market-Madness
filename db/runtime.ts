@@ -39,7 +39,8 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS fills (
     id TEXT PRIMARY KEY NOT NULL, order_id TEXT NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL,
     quantity TEXT NOT NULL, price TEXT NOT NULL, commission TEXT NOT NULL DEFAULT '0', slippage TEXT NOT NULL DEFAULT '0',
-    liquidity_model TEXT NOT NULL, executed_at TEXT NOT NULL,
+    liquidity_model TEXT NOT NULL, quote_provider TEXT, quote_quality TEXT, quote_observed_at TEXT,
+    quote_bid TEXT, quote_ask TEXT, reference_price TEXT, execution_assumptions TEXT, executed_at TEXT NOT NULL,
     FOREIGN KEY (order_id) REFERENCES orders(id), FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
     FOREIGN KEY (instrument_id) REFERENCES instruments(id)
   )`,
@@ -136,7 +137,13 @@ export function getD1() {
 export async function ensureCoreSchema() {
   if (!ready) {
     const db = getD1();
-    ready = db.batch(schemaStatements.map((statement) => db.prepare(statement))).then(() => undefined);
+    ready = (async () => {
+      await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+      const fillColumns = await db.prepare("PRAGMA table_info(fills)").all<{ name: string }>();
+      const existing = new Set(fillColumns.results.map((column) => column.name));
+      const additions = ["quote_provider TEXT", "quote_quality TEXT", "quote_observed_at TEXT", "quote_bid TEXT", "quote_ask TEXT", "reference_price TEXT", "execution_assumptions TEXT"];
+      for (const definition of additions) if (!existing.has(definition.split(" ")[0])) await db.prepare(`ALTER TABLE fills ADD COLUMN ${definition}`).run();
+    })();
   }
   return ready;
 }

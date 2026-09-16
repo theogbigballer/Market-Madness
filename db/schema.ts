@@ -68,7 +68,10 @@ export const fills = sqliteTable("fills", {
   id: text("id").primaryKey(), orderId: text("order_id").notNull().references(() => orders.id),
   portfolioId: text("portfolio_id").notNull().references(() => portfolios.id), instrumentId: text("instrument_id").notNull().references(() => instruments.id),
   quantity: text("quantity").notNull(), price: text("price").notNull(), commission: text("commission").notNull().default("0"),
-  slippage: text("slippage").notNull().default("0"), liquidityModel: text("liquidity_model").notNull(), executedAt: text("executed_at").notNull(),
+  slippage: text("slippage").notNull().default("0"), liquidityModel: text("liquidity_model").notNull(),
+  quoteProvider: text("quote_provider"), quoteQuality: text("quote_quality"), quoteObservedAt: text("quote_observed_at"),
+  quoteBid: text("quote_bid"), quoteAsk: text("quote_ask"), referencePrice: text("reference_price"), executionAssumptions: text("execution_assumptions", { mode: "json" }),
+  executedAt: text("executed_at").notNull(),
 }, (table) => [index("idx_fills_portfolio_time").on(table.portfolioId, table.executedAt), index("idx_fills_order").on(table.orderId)]);
 
 export const positionLots = sqliteTable("position_lots", {

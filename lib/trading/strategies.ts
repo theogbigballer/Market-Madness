@@ -47,7 +47,7 @@ export async function previewOptionStrategy(legs: OptionStrategyLeg[], units = 1
     maxProfit: maxProfitPerUnit === null ? null : maxProfitPerUnit * units,
     breakevens: [...new Set(breakevens.map((value) => Number(value.toFixed(2))))], greeks,
     unboundedRisk: unboundedLoss,
-    legs: quoted.map((leg) => ({ contract: leg.contract, side: leg.side, ratio: leg.ratio, symbol: optionSymbol(leg.contract), bid: Number(leg.quote.bid), ask: Number(leg.quote.ask), mark: Number(leg.quote.mark), executionPrice: Number(leg.side === "buy" ? leg.quote.ask : leg.quote.bid), analytics: leg.quote.analytics })),
+    legs: quoted.map((leg) => ({ contract: leg.contract, side: leg.side, ratio: leg.ratio, symbol: optionSymbol(leg.contract), bid: Number(leg.quote.bid), ask: Number(leg.quote.ask), mark: Number(leg.quote.mark), executionPrice: Number(leg.side === "buy" ? leg.quote.ask : leg.quote.bid), provider: leg.quote.provider, quality: leg.quote.quality, observedAt: leg.quote.observedAt, analytics: leg.quote.analytics })),
     quality: "indicative" as const,
   };
 }
