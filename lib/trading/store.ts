@@ -32,7 +32,10 @@ export async function listPortfolios() {
 export async function createPortfolio(input: { name: string; startingCapital: number; advancedDerivativesEnabled?: boolean; theme?: string }) {
   await ensureCoreSchema();
   if (!input.name.trim()) throw new Error("Portfolio name is required.");
+  if (input.name.trim().length > 80) throw new Error("Portfolio name must be 80 characters or fewer.");
   if (!Number.isFinite(input.startingCapital) || input.startingCapital < 1000) throw new Error("Starting capital must be at least $1,000.");
+  if (input.startingCapital > 1_000_000_000_000) throw new Error("Starting capital cannot exceed $1 trillion.");
+  if (input.theme && !["light", "dark"].includes(input.theme)) throw new Error("Theme must be light or dark.");
   const id = crypto.randomUUID(), ledgerId = crypto.randomUUID(), now = new Date().toISOString();
   const db = getD1();
   await db.batch([
