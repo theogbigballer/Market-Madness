@@ -29,7 +29,7 @@ const schemaStatements = [
     minimum_weight TEXT, maximum_weight TEXT, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
   `CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, client_request_id TEXT, instrument_id TEXT NOT NULL, side TEXT NOT NULL,
     order_type TEXT NOT NULL, time_in_force TEXT NOT NULL, status TEXT NOT NULL, quantity TEXT NOT NULL,
     filled_quantity TEXT NOT NULL DEFAULT '0', limit_price TEXT, stop_price TEXT, scheduled_for TEXT,
     rejection_reason TEXT, reconstruction_status TEXT NOT NULL DEFAULT 'observed', submitted_at TEXT,
@@ -143,6 +143,9 @@ export async function ensureCoreSchema() {
       const existing = new Set(fillColumns.results.map((column) => column.name));
       const additions = ["quote_provider TEXT", "quote_quality TEXT", "quote_observed_at TEXT", "quote_bid TEXT", "quote_ask TEXT", "reference_price TEXT", "execution_assumptions TEXT"];
       for (const definition of additions) if (!existing.has(definition.split(" ")[0])) await db.prepare(`ALTER TABLE fills ADD COLUMN ${definition}`).run();
+      const orderColumns = await db.prepare("PRAGMA table_info(orders)").all<{ name: string }>();
+      if (!orderColumns.results.some((column) => column.name === "client_request_id")) await db.prepare("ALTER TABLE orders ADD COLUMN client_request_id TEXT").run();
+      await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_portfolio_request ON orders(portfolio_id, client_request_id)").run();
     })();
   }
   return ready;

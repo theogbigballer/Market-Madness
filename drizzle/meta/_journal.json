@@ -57,6 +57,13 @@
       "when": 1789567903893,
       "tag": "0007_odd_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789575764976,
+      "tag": "0008_square_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }

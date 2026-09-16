@@ -47,6 +47,7 @@ export const instruments = sqliteTable("instruments", {
 
 export const orders = sqliteTable("orders", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  clientRequestId: text("client_request_id"),
   instrumentId: text("instrument_id").notNull().references(() => instruments.id),
   side: text("side", { enum: ["buy", "sell"] }).notNull(),
   orderType: text("order_type", { enum: ["market", "limit", "stop", "stop_limit"] }).notNull(),
@@ -56,7 +57,7 @@ export const orders = sqliteTable("orders", {
   limitPrice: text("limit_price"), stopPrice: text("stop_price"), scheduledFor: text("scheduled_for"),
   rejectionReason: text("rejection_reason"), reconstructionStatus: text("reconstruction_status", { enum: ["observed", "reconstructed"] }).notNull().default("observed"),
   submittedAt: text("submitted_at"), ...timestamps,
-}, (table) => [index("idx_orders_portfolio_status").on(table.portfolioId, table.status), index("idx_orders_scheduled_for").on(table.scheduledFor)]);
+}, (table) => [index("idx_orders_portfolio_status").on(table.portfolioId, table.status), index("idx_orders_scheduled_for").on(table.scheduledFor), uniqueIndex("idx_orders_portfolio_request").on(table.portfolioId, table.clientRequestId)]);
 
 export const orderLegs = sqliteTable("order_legs", {
   id: text("id").primaryKey(), orderId: text("order_id").notNull().references(() => orders.id),

@@ -178,7 +178,7 @@ function PerformanceChart({ series }: { series: Dashboard["performanceSeries"] }
 function PositionsTable({ positions, expanded = false, portfolioId, sessionOpen, onRefresh, onNotice, onError }: { positions: Position[]; expanded?: boolean; portfolioId?: string; sessionOpen?: boolean; onRefresh?: () => Promise<void>; onNotice?: (message: string) => void; onError?: (message: string) => void }) {
   async function exercise(position: Position) {
     const quantity = Number(window.prompt(`Contracts to exercise (maximum ${position.quantity})`, Math.floor(position.quantity).toString())); if (!quantity) return;
-    const response = await fetch("/api/options/exercise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ portfolioId, instrumentId: position.instrumentId, quantity }) });
+    const response = await fetch("/api/options/exercise", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ portfolioId, instrumentId: position.instrumentId, quantity }) });
     const payload = await response.json() as { error?: string }; if (!response.ok) return onError?.(payload.error || "Unable to exercise option.");
     onNotice?.("American option exercised into the underlying shares."); await onRefresh?.();
   }
@@ -228,7 +228,7 @@ function OptionsChainPanel({ portfolioId, onTrade, onComplete, onError }: { port
   function addLeg(contract: OptionChainContract["contract"], side: "buy" | "sell") { setLegs((current) => current.length >= 4 ? current : [...current, { contract, side, ratio: 1 }]); }
   async function submitStrategy() {
     if (legs.length < 2) return onError("Add at least two option legs."); setSubmitting(true);
-    const response = await fetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "submit", portfolioId, units: 1, legs, orderType: "market" }) }), payload = await response.json() as { status?: string; error?: string };
+    const response = await fetch("/api/strategies", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ action: "submit", portfolioId, units: 1, legs, orderType: "market" }) }), payload = await response.json() as { status?: string; error?: string };
     setSubmitting(false); if (!response.ok) return onError(payload.error || "Unable to place strategy."); setLegs([]); await onComplete(payload.status === "filled" ? "Option strategy filled atomically." : "Option strategy queued for the regular session.");
   }
   const byStrike = chain ? [...new Set(chain.contracts.map((item) => item.contract.strike))].map((strike) => ({ strike, call: chain.contracts.find((item) => item.contract.strike === strike && item.contract.right === "call")!, put: chain.contracts.find((item) => item.contract.strike === strike && item.contract.right === "put")! })) : [];
@@ -310,7 +310,7 @@ function AllocationPanel({ dashboard, onRefresh, onNotice, onError }: { dashboar
 function SettingsPanel({ dashboard, onRefresh, onPortfolioRemoved, onImported, onNotice, onError }: { dashboard: Dashboard; onRefresh: () => Promise<void>; onPortfolioRemoved: () => Promise<void>; onImported: (id: string) => Promise<void>; onNotice: (message: string) => void; onError: (message: string) => void }) {
   const [direction, setDirection] = useState<"deposit" | "withdrawal">("deposit"), [amount, setAmount] = useState(10000), [saving, setSaving] = useState(false);
   async function transfer() {
-    setSaving(true); const response = await fetch("/api/cash", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ portfolioId: dashboard.portfolio.id, direction, amount }) });
+    setSaving(true); const response = await fetch("/api/cash", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ portfolioId: dashboard.portfolio.id, direction, amount }) });
     const payload = await response.json() as { error?: string }; setSaving(false); if (!response.ok) return onError(payload.error || "Unable to transfer cash.");
     onNotice(`${direction === "deposit" ? "Deposit" : "Withdrawal"} recorded in the cash ledger.`); await onRefresh();
   }
@@ -369,7 +369,7 @@ function TradeDrawer({ portfolio, dashboard, initialSymbol, initialAssetClass, i
     setSubmitting(true);
     const optionContract = assetClass === "Options" ? { underlying: symbol, expiration, strike, right, exerciseStyle } : undefined;
     const forwardContract = assetClass === "Forward" ? { underlying: symbol, deliveryDate, deliveryPrice: deliveryPrice || Number(quote?.mark), quantityUnit: "units" } : undefined;
-    const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ portfolioId: portfolio.id, symbol, assetClass: assetMap[assetClass], side, orderType, quantity, limitPrice: limitPrice ? Number(limitPrice) : undefined, stopPrice: stopPrice ? Number(stopPrice) : undefined, timeInForce: "day", optionContract, futureContract: selectedFuture, forwardContract }) });
+    const response = await fetch("/api/orders", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ portfolioId: portfolio.id, symbol, assetClass: assetMap[assetClass], side, orderType, quantity, limitPrice: limitPrice ? Number(limitPrice) : undefined, stopPrice: stopPrice ? Number(stopPrice) : undefined, timeInForce: "day", optionContract, futureContract: selectedFuture, forwardContract }) });
     const payload = await response.json() as { status?: string; scheduledFor?: string; error?: string };
     setSubmitting(false); if (!response.ok) return onError(payload.error || "Order rejected.");
     await onComplete(payload.status === "scheduled" ? `Order queued for its next regular session: ${new Date(payload.scheduledFor || "").toLocaleString()}.` : payload.status === "filled" ? `Order filled. Positions, cash, and P&L have been recalculated.` : "Order accepted and is awaiting its trigger or price.");

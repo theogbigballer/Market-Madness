@@ -83,14 +83,21 @@ export async function setAllocations(portfolioId: string, targets: { bucket: str
   return getAllocations(portfolioId);
 }
 
-export async function transferCash(portfolioId: string, direction: "deposit" | "withdrawal", amount: number) {
+export async function transferCash(portfolioId: string, direction: "deposit" | "withdrawal", amount: number, requestId?: string) {
   await ensureCoreSchema();
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Transfer amount must be greater than zero.");
+  const idempotencyKey = requestId ? `cash-transfer:${portfolioId}:${requestId}` : `cash-transfer:${crypto.randomUUID()}`;
+  const existing = await getD1().prepare("SELECT event_type, amount FROM cash_ledger WHERE idempotency_key = ?").bind(idempotencyKey).first<{ event_type: "deposit" | "withdrawal"; amount: string }>();
+  const requestedAmount = formatMoney(direction === "deposit" ? amount : -amount);
+  if (existing) {
+    if (existing.event_type !== direction || existing.amount !== requestedAmount) throw new Error("Idempotency-Key was already used for a different cash transfer.");
+    return { direction: existing.event_type, amount: Number(existing.amount), duplicate: true };
+  }
   const dashboard = await getDashboard(portfolioId) as { account: { cash: number; netLiquidationValue: number; maintenanceMargin: number } };
   if (direction === "withdrawal" && (amount > dashboard.account.cash || dashboard.account.netLiquidationValue - amount < dashboard.account.maintenanceMargin * 1.1)) throw new Error("Withdrawal would violate available cash or the 110% maintenance buffer.");
   const now = new Date().toISOString(), signedAmount = direction === "deposit" ? amount : -amount;
-  await getD1().prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, description, effective_at, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, direction, formatMoney(signedAmount), direction === "deposit" ? "Cash deposit" : "Cash withdrawal", now, `cash-transfer:${crypto.randomUUID()}`).run();
-  return { direction, amount: signedAmount };
+  await getD1().prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, description, effective_at, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), portfolioId, direction, formatMoney(signedAmount), direction === "deposit" ? "Cash deposit" : "Cash withdrawal", now, idempotencyKey).run();
+  return { direction, amount: signedAmount, duplicate: false };
 }
 
 export async function archivePortfolio(portfolioId: string) {
@@ -755,10 +762,17 @@ export async function exportPortfolioCsv(portfolioId: string, report: "transacti
   return { filename: `${portfolio.name}-positions.csv`, content: toCsv(["symbol", "name", "asset_class", "quantity", "average_cost", "mark", "market_value", "unrealized_pnl", "quote_quality", "quote_provider", "observed_at"], dashboard.positions.map((row) => [row.symbol, row.name, row.assetClass, row.quantity, row.averageCost, row.mark, row.marketValue, row.unrealizedPnl, row.quote.quality, row.quote.provider, row.quote.observedAt])) };
 }
 
-export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[]; orderType?: "market" | "limit"; netLimitPrice?: number }) {
+export async function placeOptionStrategy(input: { portfolioId: string; units: number; legs: OptionStrategyLeg[]; orderType?: "market" | "limit"; netLimitPrice?: number; requestId?: string }) {
   await ensureCoreSchema();
   const orderType = input.orderType || "market";
   if (orderType === "limit" && (!Number.isFinite(input.netLimitPrice) || Number(input.netLimitPrice) <= 0)) throw new Error("A positive net limit is required.");
+  if (input.requestId) {
+    const existing = await getD1().prepare("SELECT id, status, scheduled_for, quantity, order_type, limit_price FROM orders WHERE portfolio_id = ? AND client_request_id = ?").bind(input.portfolioId, input.requestId).first<{ id: string; status: string; scheduled_for: string | null; quantity: string; order_type: string; limit_price: string | null }>();
+    if (existing) {
+      if (Number(existing.quantity) !== input.units || existing.order_type !== orderType || Number(existing.limit_price || 0) !== Number(input.netLimitPrice || 0)) throw new Error("Idempotency-Key was already used for a different strategy order.");
+      return { orderId: existing.id, status: existing.status, scheduledFor: existing.scheduled_for, duplicate: true };
+    }
+  }
   const preview = await previewOptionStrategy(input.legs, input.units);
   const dashboard = await getDashboard(input.portfolioId) as { portfolio: { advancedDerivativesEnabled: boolean }; account: { buyingPower: number } };
   if (preview.unboundedRisk && !dashboard.portfolio.advancedDerivativesEnabled) throw new Error("A strategy with uncovered call risk requires Advanced Derivatives.");
@@ -775,16 +789,20 @@ export async function placeOptionStrategy(input: { portfolioId: string; units: n
       VALUES (?, ?, ?, 'option', 'US', 'XNYS', '100', ?, ?, ?, ?, ?, 'physical')`).bind(instrumentId, leg.symbol, `${preview.underlying} ${leg.contract.expiration} ${leg.contract.strike} ${leg.contract.right.toUpperCase()} · ${leg.contract.exerciseStyle}`, `equity:${preview.underlying}`, `${leg.contract.expiration}T20:00:00.000Z`, leg.contract.strike.toString(), leg.contract.right, leg.contract.exerciseStyle));
   }
   const first = preview.legs[0];
-  statements.push(db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, limit_price, scheduled_for, submitted_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'day', ?, ?, '0', ?, ?, ?, ?, ?)`).bind(orderId, input.portfolioId, `option:${first.symbol}`, strategySide, orderType, status, input.units.toString(), input.netLimitPrice?.toString() ?? null, status === "scheduled" ? session.nextOpenAt : null, now, now, now));
+  statements.push(db.prepare(`INSERT INTO orders (id, portfolio_id, client_request_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, limit_price, scheduled_for, submitted_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'day', ?, ?, '0', ?, ?, ?, ?, ?)`).bind(orderId, input.portfolioId, input.requestId || null, `option:${first.symbol}`, strategySide, orderType, status, input.units.toString(), input.netLimitPrice?.toString() ?? null, status === "scheduled" ? session.nextOpenAt : null, now, now, now));
   for (const leg of preview.legs) statements.push(db.prepare("INSERT INTO order_legs (id, order_id, instrument_id, side, ratio_quantity) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), orderId, `option:${leg.symbol}`, leg.side, leg.ratio.toString()));
   await db.batch(statements);
   const filled = session.isOpen ? await executeOptionStrategyOrder(input.portfolioId, orderId) : false;
-  return { orderId, status: session.isOpen ? (filled ? "filled" : "accepted") : "scheduled", scheduledFor: session.isOpen ? null : session.nextOpenAt, preview };
+  return { orderId, status: session.isOpen ? (filled ? "filled" : "accepted") : "scheduled", scheduledFor: session.isOpen ? null : session.nextOpenAt, preview, duplicate: false };
 }
 
-export async function exerciseAmericanOption(input: { portfolioId: string; instrumentId: string; quantity: number }) {
+export async function exerciseAmericanOption(input: { portfolioId: string; instrumentId: string; quantity: number; requestId?: string }) {
   await ensureCoreSchema();
+  if (input.requestId) {
+    const existing = await getD1().prepare("SELECT id FROM orders WHERE portfolio_id = ? AND client_request_id = ?").bind(input.portfolioId, input.requestId).first<{ id: string }>();
+    if (existing) return { status: "exercised", quantity: input.quantity, orderId: existing.id, duplicate: true };
+  }
   if (!getUsEquitySession().isOpen) throw new Error("Manual exercise is available only during the US regular session.");
   if (!Number.isInteger(input.quantity) || input.quantity < 1) throw new Error("Exercise quantity must be a positive whole number.");
   const db = getD1();
@@ -801,7 +819,7 @@ export async function exerciseAmericanOption(input: { portfolioId: string; instr
   const now = new Date().toISOString(), orderId = crypto.randomUUID(), underlyingQuantity = (instrument.option_right === "call" ? 1 : -1) * input.quantity * 100, side = underlyingQuantity > 0 ? "buy" : "sell", fillId = crypto.randomUUID();
   const underlyingLots = await openLots(input.portfolioId), statements = [
     db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id) VALUES (?, ?, ?, 'equity', 'US', 'XNYS')").bind(instrument.underlying_instrument_id, underlyingSymbol, underlyingQuote.name),
-    db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, reconstruction_status, submitted_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'market', 'day', 'filled', ?, ?, 'reconstructed', ?, ?, ?)`).bind(orderId, input.portfolioId, instrument.underlying_instrument_id, side, Math.abs(underlyingQuantity).toString(), Math.abs(underlyingQuantity).toString(), now, now, now),
+    db.prepare(`INSERT INTO orders (id, portfolio_id, client_request_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, reconstruction_status, submitted_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'market', 'day', 'filled', ?, ?, 'reconstructed', ?, ?, ?)`).bind(orderId, input.portfolioId, input.requestId || null, instrument.underlying_instrument_id, side, Math.abs(underlyingQuantity).toString(), Math.abs(underlyingQuantity).toString(), now, now, now),
     recordFill(db, { id: fillId, orderId, portfolioId: input.portfolioId, instrumentId: instrument.underlying_instrument_id, quantity: Math.abs(underlyingQuantity), price: strike, slippage: 0, model: "manual American option exercise", executedAt: now, quote: underlyingQuote, context: "manual_exercise" }),
   ];
   let remaining = input.quantity, premiumBasis = 0;
@@ -819,10 +837,10 @@ export async function exerciseAmericanOption(input: { portfolioId: string; instr
     db.prepare("INSERT INTO alerts (id, portfolio_id, severity, event_type, title, message) VALUES (?, ?, 'warning', 'option_exercise', 'American option exercised', ?)").bind(crypto.randomUUID(), input.portfolioId, `${input.quantity} ${instrument.symbol} exercised into ${Math.abs(underlyingQuantity)} ${underlyingSymbol} shares.`),
   );
   await db.batch(statements);
-  return { status: "exercised", quantity: input.quantity, underlyingQuantity };
+  return { status: "exercised", quantity: input.quantity, underlyingQuantity, orderId, duplicate: false };
 }
 
-export async function placeOrder(input: { portfolioId: string; symbol: string; assetClass: AssetClass; side: "buy" | "sell"; orderType: "market" | "limit" | "stop" | "stop_limit"; quantity: number; limitPrice?: number; stopPrice?: number; timeInForce: "day" | "gtc"; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract }) {
+export async function placeOrder(input: { portfolioId: string; symbol: string; assetClass: AssetClass; side: "buy" | "sell"; orderType: "market" | "limit" | "stop" | "stop_limit"; quantity: number; limitPrice?: number; stopPrice?: number; timeInForce: "day" | "gtc"; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract; requestId?: string }) {
   await ensureCoreSchema();
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("Quantity must be greater than zero.");
   if (input.assetClass === "option" && (!Number.isInteger(input.quantity) || !input.optionContract || !input.optionContract.expiration || !Number.isFinite(input.optionContract.strike) || input.optionContract.strike <= 0)) throw new Error("Options require a valid contract and a whole-number quantity.");
@@ -830,13 +848,21 @@ export async function placeOrder(input: { portfolioId: string; symbol: string; a
   if (input.assetClass === "forward" && (!input.forwardContract || !input.forwardContract.deliveryDate || input.forwardContract.deliveryPrice <= 0)) throw new Error("Forwards require a valid delivery date and price.");
   if ((input.orderType === "limit" || input.orderType === "stop_limit") && (!Number.isFinite(input.limitPrice) || Number(input.limitPrice) <= 0)) throw new Error("A positive limit price is required.");
   if ((input.orderType === "stop" || input.orderType === "stop_limit") && (!Number.isFinite(input.stopPrice) || Number(input.stopPrice) <= 0)) throw new Error("A positive stop price is required.");
+  const symbol = input.assetClass === "option" && input.optionContract ? optionSymbol(input.optionContract)
+    : input.assetClass === "forward" && input.forwardContract ? forwardSymbol(input.forwardContract)
+    : input.symbol.trim().toUpperCase(), instrumentId = `${input.assetClass}:${symbol}`;
+  if (input.requestId) {
+    const existing = await getD1().prepare("SELECT id, status, scheduled_for, instrument_id, side, order_type, time_in_force, quantity, limit_price, stop_price FROM orders WHERE portfolio_id = ? AND client_request_id = ?").bind(input.portfolioId, input.requestId).first<{ id: string; status: string; scheduled_for: string | null; instrument_id: string; side: string; order_type: string; time_in_force: string; quantity: string; limit_price: string | null; stop_price: string | null }>();
+    if (existing) {
+      const sameRequest = existing.instrument_id === instrumentId && existing.side === input.side && existing.order_type === input.orderType && existing.time_in_force === input.timeInForce && Number(existing.quantity) === input.quantity && Number(existing.limit_price || 0) === Number(input.limitPrice || 0) && Number(existing.stop_price || 0) === Number(input.stopPrice || 0);
+      if (!sameRequest) throw new Error("Idempotency-Key was already used for a different order.");
+      return { orderId: existing.id, status: existing.status, scheduledFor: existing.scheduled_for, duplicate: true };
+    }
+  }
   const quote = input.assetClass === "option" && input.optionContract ? await getOptionQuote(input.optionContract)
     : input.assetClass === "future" && input.futureContract ? await getFutureQuote(input.futureContract)
     : input.assetClass === "forward" && input.forwardContract ? await getForwardQuote(input.forwardContract)
     : await getMarketQuote(input.symbol, input.assetClass);
-  const symbol = input.assetClass === "option" && input.optionContract ? optionSymbol(input.optionContract)
-    : input.assetClass === "forward" && input.forwardContract ? forwardSymbol(input.forwardContract)
-    : input.symbol.trim().toUpperCase(), instrumentId = `${input.assetClass}:${symbol}`;
   const session = input.assetClass === "equity" || input.assetClass === "option" ? getUsEquitySession() : input.assetClass === "future" ? getCmeSession() : { isOpen: true, nextOpenAt: undefined };
   const estimatedExecution = estimateExecution(quote, input.side, input.quantity);
   const execution = input.assetClass === "forward" && input.forwardContract
@@ -871,9 +897,9 @@ export async function placeOrder(input: { portfolioId: string; symbol: string; a
   const statements = [
     db.prepare("INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(instrumentId, symbol, quote.name, input.assetClass, input.assetClass === "crypto" ? "CRYPTO" : "US", input.assetClass === "crypto" ? "24/7" : "XNYS"),
-    db.prepare(`INSERT INTO orders (id, portfolio_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, limit_price, stop_price, scheduled_for, submitted_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(orderId, input.portfolioId, instrumentId, input.side, input.orderType, input.timeInForce, status, input.quantity.toString(), status === "filled" ? input.quantity.toString() : "0", input.limitPrice?.toString() ?? null, input.stopPrice?.toString() ?? null, status === "scheduled" ? session.nextOpenAt : null, now, now, now),
+    db.prepare(`INSERT INTO orders (id, portfolio_id, client_request_id, instrument_id, side, order_type, time_in_force, status, quantity, filled_quantity, limit_price, stop_price, scheduled_for, submitted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(orderId, input.portfolioId, input.requestId || null, instrumentId, input.side, input.orderType, input.timeInForce, status, input.quantity.toString(), status === "filled" ? input.quantity.toString() : "0", input.limitPrice?.toString() ?? null, input.stopPrice?.toString() ?? null, status === "scheduled" ? session.nextOpenAt : null, now, now, now),
   ];
 
   if (status === "filled") {
@@ -911,5 +937,5 @@ export async function placeOrder(input: { portfolioId: string; symbol: string; a
       VALUES (?, ?, ?, 'forward', 'OTC', '24/7', '1', ?, ?, ?, 'cash')`)
     .bind(instrumentId, symbol, quote.name, `${input.forwardContract.underlying.endsWith("-USD") ? "crypto" : "equity"}:${input.forwardContract.underlying.toUpperCase()}`, `${input.forwardContract.deliveryDate}T20:00:00.000Z`, input.forwardContract.deliveryPrice.toString());
   await db.batch(statements);
-  return { orderId, status, execution, quote, scheduledFor: status === "scheduled" ? session.nextOpenAt : null };
+  return { orderId, status, execution, quote, scheduledFor: status === "scheduled" ? session.nextOpenAt : null, duplicate: false };
 }
