@@ -20,6 +20,10 @@ const schemaStatements = [
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, symbol TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS watchlist_items (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, symbol TEXT NOT NULL, asset_class TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS allocations (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, bucket TEXT NOT NULL, target_weight TEXT NOT NULL,
     minimum_weight TEXT, maximum_weight TEXT, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
@@ -63,6 +67,11 @@ const schemaStatements = [
     effective_at TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS quotes (
+    id TEXT PRIMARY KEY NOT NULL, instrument_id TEXT NOT NULL, provider TEXT NOT NULL, bid TEXT, ask TEXT,
+    last TEXT, mark TEXT NOT NULL, quality TEXT NOT NULL, observed_at TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (instrument_id) REFERENCES instruments(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS alerts (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT, severity TEXT NOT NULL, event_type TEXT NOT NULL,
     title TEXT NOT NULL, message TEXT NOT NULL, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -97,7 +106,9 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_lot_closures_portfolio_time ON lot_closures(portfolio_id, closed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_lot_closures_portfolio_instrument ON lot_closures(portfolio_id, instrument_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_quotes_instrument_time ON quotes(instrument_id, observed_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_benchmarks_portfolio_symbol ON portfolio_benchmarks(portfolio_id, symbol)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_portfolio_symbol ON watchlist_items(portfolio_id, symbol)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_allocations_portfolio_bucket ON allocations(portfolio_id, bucket)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_portfolio_date ON portfolio_snapshots(portfolio_id, snapshot_date)`,

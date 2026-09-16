@@ -27,6 +27,12 @@ export const portfolioBenchmarks = sqliteTable("portfolio_benchmarks", {
   symbol: text("symbol").notNull(), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("idx_portfolio_benchmarks_portfolio_symbol").on(table.portfolioId, table.symbol)]);
 
+export const watchlistItems = sqliteTable("watchlist_items", {
+  id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  symbol: text("symbol").notNull(), assetClass: text("asset_class", { enum: ["equity", "crypto"] }).notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("idx_watchlist_portfolio_symbol").on(table.portfolioId, table.symbol)]);
+
 export const instruments = sqliteTable("instruments", {
   id: text("id").primaryKey(), symbol: text("symbol").notNull(), displayName: text("display_name").notNull(),
   assetClass: text("asset_class", { enum: ["equity", "crypto", "future", "forward", "option", "cash"] }).notNull(),

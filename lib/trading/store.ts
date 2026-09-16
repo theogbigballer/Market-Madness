@@ -95,6 +95,7 @@ export async function permanentlyDeletePortfolio(portfolioId: string) {
     db.prepare("DELETE FROM performance_observations WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM portfolio_snapshots WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM portfolio_benchmarks WHERE portfolio_id = ?").bind(portfolioId),
+    db.prepare("DELETE FROM watchlist_items WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM allocations WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM processing_events WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM cash_ledger WHERE portfolio_id = ?").bind(portfolioId),
