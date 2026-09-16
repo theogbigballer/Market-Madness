@@ -1,3 +1,5 @@
+import { moneyToNumber, multiplyMoney, subtractDecimal, sumMoney } from "./money.ts";
+
 export function calculateRealizedPnl(input: {
   entryPrice: number;
   exitPrice: number;
@@ -7,11 +9,11 @@ export function calculateRealizedPnl(input: {
 }) {
   if (![input.entryPrice, input.exitPrice, input.signedOpenQuantity, input.closedQuantity, input.multiplier].every(Number.isFinite)) throw new Error("Realized P&L inputs must be finite numbers.");
   if (input.signedOpenQuantity === 0 || input.closedQuantity < 0 || input.multiplier <= 0) throw new Error("Realized P&L requires a non-zero open lot, non-negative close quantity, and positive multiplier.");
-  return (input.exitPrice - input.entryPrice) * Math.sign(input.signedOpenQuantity) * input.closedQuantity * input.multiplier;
+  return moneyToNumber(multiplyMoney(subtractDecimal(input.exitPrice, input.entryPrice), Math.sign(input.signedOpenQuantity), input.closedQuantity, input.multiplier));
 }
 
 export function calculateFlowAdjustedPnl(netLiquidationValue: number, startingCapital: number, externalCashFlows: number) {
-  return netLiquidationValue - startingCapital - externalCashFlows;
+  return Number(sumMoney([netLiquidationValue, -startingCapital, -externalCashFlows]));
 }
 
 export function netSignedQuantity<T extends { quantity: number }>(incomingQuantity: number, lots: T[]) {
