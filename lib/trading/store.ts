@@ -9,6 +9,7 @@ import { estimateExecution, getMarketQuote } from "../market/quotes";
 import type { OptionStrategyLeg } from "./strategies";
 import { previewOptionStrategy } from "./strategies";
 import { calculateFlowAdjustedPnl, calculatePortfolioOptionMargin, calculateRealizedPnl, netSignedQuantity, strategyLimitIsMarketable } from "./accounting";
+import { evaluateAlertRules, listAlertRules } from "./alert-rules";
 
 type PortfolioRow = { id: string; name: string; starting_capital: string; benchmark_symbol: string | null; advanced_derivatives_enabled: number; theme: string; created_at: string };
 type LotRow = { id: string; instrument_id: string; opening_fill_id: string; remaining_quantity: string; cost_basis: string; opened_at: string; symbol: string; display_name: string; asset_class: AssetClass; multiplier: string; underlying_instrument_id: string | null; expiration_at: string | null; first_notice_at: string | null; strike: string | null; option_right: "call" | "put" | null; exercise_style: "american" | "european" | null; settlement_type: "cash" | "physical" | null };
@@ -91,6 +92,7 @@ export async function permanentlyDeletePortfolio(portfolioId: string) {
   await ensureCoreSchema();
   const db = getD1();
   await db.batch([
+    db.prepare("DELETE FROM alert_rules WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM alerts WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM performance_observations WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM portfolio_snapshots WHERE portfolio_id = ?").bind(portfolioId),
@@ -351,6 +353,17 @@ export async function cancelOrder(portfolioId: string, orderId: string) {
   return { orderId, status: "canceled" };
 }
 
+export async function replaceOrderPrice(portfolioId: string, orderId: string, limitPrice?: number, stopPrice?: number) {
+  await ensureCoreSchema();
+  const order = await getD1().prepare("SELECT order_type FROM orders WHERE id = ? AND portfolio_id = ? AND status IN ('submitted', 'scheduled', 'accepted')").bind(orderId, portfolioId).first<{ order_type: string }>();
+  if (!order) throw new Error("Only active orders can be replaced.");
+  if (["limit", "stop_limit"].includes(order.order_type) && (!Number.isFinite(limitPrice) || Number(limitPrice) <= 0)) throw new Error("Enter a positive limit price.");
+  if (["stop", "stop_limit"].includes(order.order_type) && (!Number.isFinite(stopPrice) || Number(stopPrice) <= 0)) throw new Error("Enter a positive stop price.");
+  await getD1().prepare("UPDATE orders SET limit_price = ?, stop_price = ?, updated_at = ? WHERE id = ? AND portfolio_id = ?")
+    .bind(["limit", "stop_limit"].includes(order.order_type) ? Number(limitPrice).toFixed(6) : null, ["stop", "stop_limit"].includes(order.order_type) ? Number(stopPrice).toFixed(6) : null, new Date().toISOString(), orderId, portfolioId).run();
+  return { id: orderId, status: "replaced" };
+}
+
 type CorporateActionRow = { id: string; instrument_id: string; symbol: string; action_type: "cash_dividend" | "split"; effective_at: string; ratio: string | null; cash_amount: string | null; status: "scheduled" | "applied" | "canceled"; source: string; notes: string | null; created_at: string };
 
 export async function listCorporateActions() {
@@ -578,7 +591,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   if (!portfolio) throw new Error("Portfolio not found.");
   const [cash, netExternalFlows, lots, orderResult] = await Promise.all([
     cashBalance(portfolioId), externalCashFlows(portfolioId), openLots(portfolioId),
-    getD1().prepare(`SELECT o.id, o.side, o.order_type, o.status, o.quantity, o.filled_quantity, o.limit_price, o.scheduled_for, o.created_at, i.symbol,
+    getD1().prepare(`SELECT o.id, o.side, o.order_type, o.time_in_force, o.status, o.quantity, o.filled_quantity, o.limit_price, o.stop_price, o.scheduled_for, o.rejection_reason, o.created_at, i.symbol, i.asset_class, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style,
       (SELECT COUNT(*) FROM order_legs ol WHERE ol.order_id = o.id) AS leg_count
       FROM orders o JOIN instruments i ON i.id = o.instrument_id WHERE o.portfolio_id = ? ORDER BY o.created_at DESC LIMIT 12`)
       .bind(portfolioId).all<{ id: string; side: string; order_type: string; status: string; quantity: string; filled_quantity: string; limit_price: string | null; scheduled_for: string | null; created_at: string; symbol: string; leg_count: number }>(),
@@ -637,9 +650,11 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
     .bind(crypto.randomUUID(), portfolioId, snapshotDate, netLiquidationValue.toFixed(2), cash.toFixed(2), realizedPnl.toFixed(2), unrealizedPnl.toFixed(2), maintenanceMargin.toFixed(2), buyingPower.toFixed(2)).run();
   const benchmarks = await getBenchmarks(portfolioId);
   await recordPerformanceObservations(portfolioId, netLiquidationValue - netExternalFlows, benchmarks);
-  const [snapshotResult, alertResult, performanceSeries, ledgerReport, closureReport] = await Promise.all([
+  await evaluateAlertRules(portfolioId, totalPnl);
+  const [snapshotResult, alertResult, alertRules, performanceSeries, ledgerReport, closureReport] = await Promise.all([
     getD1().prepare("SELECT snapshot_date, net_liquidation_value, realized_pnl, unrealized_pnl FROM portfolio_snapshots WHERE portfolio_id = ? ORDER BY snapshot_date DESC LIMIT 30").bind(portfolioId).all<{ snapshot_date: string; net_liquidation_value: string; realized_pnl: string; unrealized_pnl: string }>(),
     getD1().prepare("SELECT id, severity, event_type, title, message, created_at FROM alerts WHERE portfolio_id = ? ORDER BY created_at DESC LIMIT 12").bind(portfolioId).all<{ id: string; severity: string; event_type: string; title: string; message: string; created_at: string }>(),
+    listAlertRules(portfolioId),
     getPerformanceSeries(portfolioId, benchmarks.map((benchmark) => benchmark.symbol)),
     getLedgerReport(portfolioId, realizedPnl),
     getClosureReport(portfolioId),
@@ -669,13 +684,26 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
     return [{ instrumentId: position.instrumentId, symbol: position.symbol, underlying: position.optionContract.underlying, expiration: position.optionContract.expiration, daysToExpiration, quantity: position.quantity, inTheMoney, action: inTheMoney ? (position.quantity > 0 ? "exercise" : "assignment") : "expire", shareChange, cashImpact: -shareChange * position.optionContract.strike }];
   }).sort((left, right) => left.daysToExpiration - right.daysToExpiration);
   const reconciliation = await getReconciliationStatus(portfolioId);
+  const exposureByUnderlying = Object.values(positions.reduce<Record<string, { underlying: string; grossExposure: number; netMarketValue: number; unrealizedPnl: number; delta: number; positions: number }>>((groups, position) => {
+    const underlying = position.optionContract?.underlying || position.symbol;
+    groups[underlying] ||= { underlying, grossExposure: 0, netMarketValue: 0, unrealizedPnl: 0, delta: 0, positions: 0 };
+    groups[underlying].grossExposure += Math.abs(position.marketValue); groups[underlying].netMarketValue += position.marketValue; groups[underlying].unrealizedPnl += position.unrealizedPnl; groups[underlying].positions += 1;
+    groups[underlying].delta += position.optionGreeks ? position.optionGreeks.delta * position.quantity * position.multiplier : position.quantity * position.multiplier;
+    return groups;
+  }, {})).sort((left, right) => right.grossExposure - left.grossExposure);
+  const strategyExposure = Object.values(positions.filter((position) => position.optionContract).reduce<Record<string, { key: string; underlying: string; expiration: string; contracts: number; grossPremium: number; delta: number; theta: number }>>((groups, position) => {
+    const contract = position.optionContract!, key = `${contract.underlying}:${contract.expiration}`;
+    groups[key] ||= { key, underlying: contract.underlying, expiration: contract.expiration, contracts: 0, grossPremium: 0, delta: 0, theta: 0 };
+    groups[key].contracts += position.quantity; groups[key].grossPremium += Math.abs(position.marketValue); groups[key].delta += (position.optionGreeks?.delta || 0) * position.quantity * position.multiplier; groups[key].theta += (position.optionGreeks?.theta || 0) * position.quantity * position.multiplier;
+    return groups;
+  }, {})).sort((left, right) => left.expiration.localeCompare(right.expiration));
   return {
     portfolio: { id: portfolio.id, name: portfolio.name, startingCapital, advancedDerivativesEnabled: Boolean(portfolio.advanced_derivatives_enabled), theme: portfolio.theme },
     account: { cash, marketValue, netLiquidationValue, totalPnl, totalReturn: startingCapital ? totalPnl / startingCapital : 0, netExternalFlows, buyingPower, reservedBuyingPower: reservedForOrders, grossExposure, maintenanceMargin, optionMargin: optionMargin.requirement, marginOffsets: optionMargin.definedRiskOffsets, coveredOptionContracts: optionMargin.coveredContracts, uncoveredOptionContracts: optionMargin.uncoveredContracts, marginUtilization: netLiquidationValue > 0 ? maintenanceMargin / netLiquidationValue : 0 },
     positions, orders: orderResult.results, benchmarks, performanceSeries, ledgerReport, closureReport, allocations: await getAllocations(portfolioId), corporateActions: await listCorporateActions(), session,
     pnlHistory: snapshotResult.results.map((item) => ({ date: item.snapshot_date, netLiquidationValue: Number(item.net_liquidation_value), realizedPnl: Number(item.realized_pnl), unrealizedPnl: Number(item.unrealized_pnl) })).reverse(),
     risk: { leverage: netLiquidationValue > 0 ? grossExposure / netLiquidationValue : 0, estimatedDailyVar, largestPosition: largestPosition ? { ...largestPosition, concentration: grossExposure ? largestPosition.value / grossExposure : 0 } : null, greeks, scenarios }, expirationPreview, reconciliation,
-    alerts: alertResult.results,
+    alerts: alertResult.results, alertRules, exposureBreakdown: { byUnderlying: exposureByUnderlying, strategies: strategyExposure },
     quoteStatus: { provider: positions[0]?.quote.provider || "Provider routing active", quality: positions[0]?.quote.quality || "ready", refreshedAt: new Date().toISOString() },
   };
 }

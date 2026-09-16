@@ -77,6 +77,12 @@ const schemaStatements = [
     title TEXT NOT NULL, message TEXT NOT NULL, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS alert_rules (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, rule_type TEXT NOT NULL, symbol TEXT, asset_class TEXT,
+    comparator TEXT NOT NULL, threshold TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', last_value TEXT,
+    triggered_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, snapshot_date TEXT NOT NULL,
     net_liquidation_value TEXT NOT NULL, cash TEXT NOT NULL, realized_pnl TEXT NOT NULL, unrealized_pnl TEXT NOT NULL,
@@ -111,6 +117,7 @@ const schemaStatements = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_portfolio_symbol ON watchlist_items(portfolio_id, symbol)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_allocations_portfolio_bucket ON allocations(portfolio_id, bucket)`,
   `CREATE INDEX IF NOT EXISTS idx_alerts_portfolio_unread ON alerts(portfolio_id, read_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_alert_rules_portfolio_status ON alert_rules(portfolio_id, status)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_portfolio_date ON portfolio_snapshots(portfolio_id, snapshot_date)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_performance_observations_bucket ON performance_observations(portfolio_id, series_key, observed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_performance_observations_portfolio_time ON performance_observations(portfolio_id, observed_at)`,

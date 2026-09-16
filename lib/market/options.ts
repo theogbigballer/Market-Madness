@@ -78,7 +78,7 @@ function thirdFriday(year: number, month: number) {
   return new Date(Date.UTC(year, month, 1 + ((5 - first.getUTCDay() + 7) % 7) + 14));
 }
 
-export async function optionChain(underlyingInput: string) {
+export async function optionChain(underlyingInput: string, selectedExpiration?: string, exerciseStyle: "american" | "european" = "american") {
   const underlying = underlyingInput.toUpperCase();
   const quote = await getMarketQuote(underlying, "equity");
   const spot = Number(quote.mark), today = new Date();
@@ -90,5 +90,10 @@ export async function optionChain(underlyingInput: string) {
   const increment = spot < 100 ? 2.5 : spot < 300 ? 5 : 10;
   const center = Math.round(spot / increment) * increment;
   const strikes = Array.from({ length: 13 }, (_, index) => center + (index - 6) * increment).filter((strike) => strike > 0);
-  return { underlying, underlyingQuote: quote, expirations, strikes };
+  const expiration = expirations.includes(selectedExpiration || "") ? selectedExpiration! : expirations[0];
+  const contracts = await Promise.all(strikes.flatMap((strike) => (["call", "put"] as const).map(async (right) => {
+    const contract = { underlying, expiration, strike, right, exerciseStyle } satisfies OptionContract, optionQuote = await getOptionQuote(contract, quote);
+    return { contract, symbol: optionSymbol(contract), bid: Number(optionQuote.bid), ask: Number(optionQuote.ask), mark: Number(optionQuote.mark), quality: optionQuote.quality, analytics: optionQuote.analytics };
+  })));
+  return { underlying, underlyingQuote: quote, expirations, strikes, expiration, exerciseStyle, contracts };
 }

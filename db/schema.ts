@@ -122,6 +122,14 @@ export const alerts = sqliteTable("alerts", {
   title: text("title").notNull(), message: text("message").notNull(), readAt: text("read_at"), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_alerts_portfolio_unread").on(table.portfolioId, table.readAt)]);
 
+export const alertRules = sqliteTable("alert_rules", {
+  id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  ruleType: text("rule_type", { enum: ["price", "pnl"] }).notNull(), symbol: text("symbol"), assetClass: text("asset_class"),
+  comparator: text("comparator", { enum: ["above", "below"] }).notNull(), threshold: text("threshold").notNull(),
+  status: text("status", { enum: ["active", "triggered", "disabled"] }).notNull().default("active"),
+  lastValue: text("last_value"), triggeredAt: text("triggered_at"), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_alert_rules_portfolio_status").on(table.portfolioId, table.status)]);
+
 export const processingEvents = sqliteTable("processing_events", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
   eventType: text("event_type", { enum: ["expiration", "exercise", "assignment", "settlement", "corporate_action", "forced_liquidation", "offline_fill"] }).notNull(),

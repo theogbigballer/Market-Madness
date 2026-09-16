@@ -1,7 +1,7 @@
 import type { AssetClass } from "../../../lib/domain";
 import type { OptionContract } from "../../../lib/market/options";
 import type { ForwardContract, FutureContract } from "../../../lib/market/derivatives";
-import { cancelOrder, placeOrder } from "../../../lib/trading/store";
+import { cancelOrder, placeOrder, replaceOrderPrice } from "../../../lib/trading/store";
 
 export async function POST(request: Request) {
   try {
@@ -18,4 +18,12 @@ export async function DELETE(request: Request) {
     if (!portfolioId || !orderId) throw new Error("portfolioId and orderId are required.");
     return Response.json(await cancelOrder(portfolioId, orderId));
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to cancel order." }, { status: 400 }); }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const body = await request.json() as { portfolioId?: string; orderId?: string; limitPrice?: number; stopPrice?: number };
+    if (!body.portfolioId || !body.orderId) throw new Error("portfolioId and orderId are required.");
+    return Response.json(await replaceOrderPrice(body.portfolioId, body.orderId, body.limitPrice, body.stopPrice));
+  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to replace order." }, { status: 400 }); }
 }
