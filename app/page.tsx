@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Image from "next/image";
 import StrategyBuilder from "./components/StrategyBuilder";
 import CorporateActionsPanel, { type CorporateAction } from "./components/CorporateActionsPanel";
 
@@ -98,7 +99,7 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">MM</span><span>Market Madness</span></div>
+        <div className="brand"><span className="brand-mark"><Image src="/market-madness-logo.png" width={34} height={34} alt="" priority /></span><span>Market Madness</span></div>
         <nav aria-label="Primary navigation">
           <p className="nav-label">Workspace</p>
           {navigation.map((item) => <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => { setActive(item); if (item === "Trade") setTradeOpen(true); }}><span className="nav-dot" />{item}</button>)}
@@ -323,7 +324,7 @@ function PortfolioDialog({ dark, onClose, onCreated, onError }: { dark: boolean;
     setSaving(false); if (!response.ok || !payload.id) return onError(payload.error || "Unable to create portfolio.");
     await onCreated(payload.id);
   }
-  return <div className="modal-backdrop"><section className="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="portfolio-title"><div className="onboarding-copy"><span className="brand-mark">MM</span><p className="eyebrow">Portfolio setup</p><h2 id="portfolio-title">Build your trading book</h2><p>Start with real accounting, explicit data quality, and the risk controls we defined.</p><ul><li>USD base currency</li><li>Current markets only</li><li>Immediate margin liquidation</li><li>No equity after-hours execution</li></ul></div><form onSubmit={submit}><label>Portfolio name<input name="name" required defaultValue="Core Opportunities" /></label><label>Starting capital<input name="capital" type="number" required min="1000" step="100" defaultValue="500000" /><small>$1,000 minimum · $500,000 suggested</small></label><div className="setup-note"><strong>Benchmarks come next</strong><span>Once inside, choose any set of benchmarks you want to compare against.</span></div><div className="check-label"><input id="advanced-derivatives" name="advanced" type="checkbox"/><label htmlFor="advanced-derivatives"><strong>Enable Advanced Derivatives</strong><small>Required for uncovered short options.</small></label></div><div className="dialog-actions">{onClose && <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>}<button className="trade-button" disabled={saving}>{saving ? "Creating…" : "Create portfolio"}</button></div></form></section></div>;
+  return <div className="modal-backdrop"><section className="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="portfolio-title"><div className="onboarding-copy"><span className="brand-mark onboarding-logo"><Image src="/market-madness-logo.png" width={78} height={78} alt="Market Madness" /></span><p className="eyebrow">Portfolio setup</p><h2 id="portfolio-title">Build your trading book</h2><p>Start with real accounting, explicit data quality, and the risk controls we defined.</p><ul><li>USD base currency</li><li>Current markets only</li><li>Immediate margin liquidation</li><li>No equity after-hours execution</li></ul></div><form onSubmit={submit}><label>Portfolio name<input name="name" required defaultValue="Core Opportunities" /></label><label>Starting capital<input name="capital" type="number" required min="1000" step="100" defaultValue="500000" /><small>$1,000 minimum · $500,000 suggested</small></label><div className="setup-note"><strong>Benchmarks come next</strong><span>Once inside, choose any set of benchmarks you want to compare against.</span></div><div className="check-label"><input id="advanced-derivatives" name="advanced" type="checkbox"/><label htmlFor="advanced-derivatives"><strong>Enable Advanced Derivatives</strong><small>Required for uncovered short options.</small></label></div><div className="dialog-actions">{onClose && <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>}<button className="trade-button" disabled={saving}>{saving ? "Creating…" : "Create portfolio"}</button></div></form></section></div>;
 }
 
 function TradeDrawer({ portfolio, dashboard, initialSymbol, initialAssetClass, initialSide, initialQuantity, initialOrderType, initialLimitPrice, initialStopPrice, initialOptionContract, onClose, onComplete, onError }: { portfolio: Portfolio; dashboard: Dashboard; initialSymbol?: string; initialAssetClass?: "equity" | "crypto" | "option"; initialSide?: "buy" | "sell"; initialQuantity?: number; initialOrderType?: "market" | "limit" | "stop" | "stop_limit"; initialLimitPrice?: number; initialStopPrice?: number; initialOptionContract?: OptionChainContract["contract"]; onClose: () => void; onComplete: (message: string) => void; onError: (message: string) => void }) {
