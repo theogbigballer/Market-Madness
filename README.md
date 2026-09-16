@@ -28,12 +28,13 @@ Open `http://localhost:3000`, create a portfolio, and choose its starting alloca
 - Equities and equity options never execute outside their regular sessions; orders queue for the next open.
 - Quotes refresh about every 30 seconds and always expose provider, timestamp, and quality.
 - Orders require sufficient buying power. Maintenance deficiencies trigger forced liquidation to a 110% buffer.
-- American and European option exercise styles are supported. Long American contracts can be exercised manually in-session, dividend-driven short-call assignment is deterministic, and contracts at least $0.01 in the money auto-exercise at expiry.
+- American and European option exercise styles are supported. Long American contracts can be exercised manually in-session, dividend-driven short-call assignment is deterministic, and contracts at least $0.01 in the money auto-exercise at expiry. Delivered shares net against opposing underlying lots before creating a residual position.
 - Physically delivered futures are closed before first notice; futures rolling is manual.
 - Cash earns no interest, negative balances accrue no interest, and explicit commissions default to zero.
 - FIFO lots, immutable lot-closure records, and immutable cash-ledger events provide the accounting foundation. Partial closes retain entry/exit prices, multipliers, reasons, and closing-fill links. Simulated cash dividends and splits are scheduled in-app and processed idempotently across affected portfolios.
 - Allocation targets must total 100% and display drift without automatically trading. Portfolios can be archived or permanently deleted from Settings.
-- Deposits, withdrawals, and transfers do not count as investment P&L. Intraday relative returns use a flow-adjusted portfolio index and selected benchmarks sampled every 30 seconds.
+- Deposits, withdrawals, and transfers do not count as investment P&L. Intraday relative returns use a flow-adjusted portfolio index and up to eight user-searched benchmarks sampled every 30 seconds.
+- Option margin recognizes covered calls, vertical spreads, and same-expiration iron-condor offsets. The Risk workspace previews near-term exercise and assignment effects and reports accounting reconciliation checks.
 - P&L, current positions, closed trades, and the immutable cash ledger can be exported as local CSV files.
 
 See [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for the complete blueprint.
