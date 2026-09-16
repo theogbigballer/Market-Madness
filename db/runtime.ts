@@ -49,6 +49,14 @@ const schemaStatements = [
     opened_at TEXT NOT NULL, closed_at TEXT, FOREIGN KEY (portfolio_id) REFERENCES portfolios(id),
     FOREIGN KEY (instrument_id) REFERENCES instruments(id), FOREIGN KEY (opening_fill_id) REFERENCES fills(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS lot_closures (
+    id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, instrument_id TEXT NOT NULL, opening_lot_id TEXT NOT NULL,
+    closing_fill_id TEXT, quantity TEXT NOT NULL, entry_price TEXT NOT NULL, exit_price TEXT NOT NULL,
+    multiplier TEXT NOT NULL, realized_pnl TEXT NOT NULL, closure_reason TEXT NOT NULL,
+    basis_transferred INTEGER NOT NULL DEFAULT 0, closed_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (portfolio_id) REFERENCES portfolios(id), FOREIGN KEY (instrument_id) REFERENCES instruments(id),
+    FOREIGN KEY (opening_lot_id) REFERENCES position_lots(id), FOREIGN KEY (closing_fill_id) REFERENCES fills(id)
+  )`,
   `CREATE TABLE IF NOT EXISTS cash_ledger (
     id TEXT PRIMARY KEY NOT NULL, portfolio_id TEXT NOT NULL, event_type TEXT NOT NULL, amount TEXT NOT NULL,
     currency TEXT NOT NULL DEFAULT 'USD', related_entity_type TEXT, related_entity_id TEXT, description TEXT NOT NULL,
@@ -86,6 +94,8 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_lot_closures_portfolio_time ON lot_closures(portfolio_id, closed_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_lot_closures_portfolio_instrument ON lot_closures(portfolio_id, instrument_id)`,
   `CREATE INDEX IF NOT EXISTS idx_cash_ledger_portfolio_time ON cash_ledger(portfolio_id, effective_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolio_benchmarks_portfolio_symbol ON portfolio_benchmarks(portfolio_id, symbol)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_allocations_portfolio_bucket ON allocations(portfolio_id, bucket)`,

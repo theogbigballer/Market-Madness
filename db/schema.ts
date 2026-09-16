@@ -72,6 +72,16 @@ export const positionLots = sqliteTable("position_lots", {
   costBasis: text("cost_basis").notNull(), openedAt: text("opened_at").notNull(), closedAt: text("closed_at"),
 }, (table) => [index("idx_position_lots_portfolio_instrument").on(table.portfolioId, table.instrumentId)]);
 
+export const lotClosures = sqliteTable("lot_closures", {
+  id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  instrumentId: text("instrument_id").notNull().references(() => instruments.id), openingLotId: text("opening_lot_id").notNull().references(() => positionLots.id),
+  closingFillId: text("closing_fill_id").references(() => fills.id), quantity: text("quantity").notNull(),
+  entryPrice: text("entry_price").notNull(), exitPrice: text("exit_price").notNull(), multiplier: text("multiplier").notNull(),
+  realizedPnl: text("realized_pnl").notNull(), closureReason: text("closure_reason", { enum: ["trade", "strategy", "forced_liquidation", "settlement", "expiration", "exercise", "assignment"] }).notNull(),
+  basisTransferred: integer("basis_transferred", { mode: "boolean" }).notNull().default(false), closedAt: text("closed_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_lot_closures_portfolio_time").on(table.portfolioId, table.closedAt), index("idx_lot_closures_portfolio_instrument").on(table.portfolioId, table.instrumentId)]);
+
 export const cashLedger = sqliteTable("cash_ledger", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
   eventType: text("event_type", { enum: ["initial_capital", "deposit", "withdrawal", "trade", "dividend", "settlement", "exercise", "assignment", "transfer", "adjustment"] }).notNull(),
