@@ -10,6 +10,7 @@ test("realized P&L respects long, short, partial, and contract multiplier econom
 test("external cash flows do not create portfolio P&L", () => {
   assert.equal(calculateFlowAdjustedPnl(525_000, 500_000, 25_000), 0);
   assert.equal(calculateFlowAdjustedPnl(510_000, 500_000, -5_000), 15_000);
+  assert.equal(calculateFlowAdjustedPnl(1000.3, 1000.1, 0.1), 0.1);
 });
 
 test("delivered shares close opposing lots before opening a residual position", () => {
