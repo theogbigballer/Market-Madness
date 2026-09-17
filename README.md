@@ -16,10 +16,47 @@ Requirements: Node.js 22.13 or newer.
 
 ```bash
 npm install
+npm run doctor
 npm run dev
 ```
 
 Open `http://localhost:3000`, create a portfolio, and choose its starting allocation. The local database is created automatically. Optional market-data credentials belong in a local `.env` file based on `.env.example` and must never be committed.
+
+For a brand-new clone, run `npm install` before `npm run doctor`; the doctor intentionally reports a missing `node_modules` directory. No API credential is required. Coinbase public crypto quotes work without a key, and unavailable equity coverage falls back to visibly labeled simulated prices.
+
+## First-run path
+
+1. Create a portfolio with at least $1,000 of starting capital.
+2. Use the overview checklist to choose searchable benchmarks and set a 100% allocation target.
+3. Place a small test order and inspect its quote quality, buying-power estimate, execution model, and fill provenance.
+4. Open Data providers to confirm which feeds are live, cached, indicative, or simulated.
+5. Download a portable portfolio package from Settings before upgrades or local-data maintenance.
+
+## Useful commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the local simulator at `http://localhost:3000`. |
+| `npm run doctor` | Check Node, dependencies, required files, feed configuration, and local database presence. |
+| `npm run lint` | Run static code checks. |
+| `npm test` | Build the production bundle and run the full automated suite. |
+| `npm run db:reset-local` | Dry-run a local database reset; it does not change data. |
+| `npm run db:reset-local -- --confirm` | Move local D1 state into a timestamped backup, then allow a fresh database on next start. |
+| `npm run db:reset-local -- --list` | List recoverable local D1 backups. |
+| `npm run db:reset-local -- --restore BACKUP_NAME` | Restore a listed backup when no current D1 state exists. |
+
+Stop the development server before resetting or restoring data. Portfolio-package exports are the preferred portable backup; `.wrangler/backups` is a machine-local emergency rollback and remains gitignored.
+
+## Troubleshooting
+
+- **The doctor says `node_modules` is missing:** run `npm install`, then repeat `npm run doctor`.
+- **Quotes say simulated:** this is expected when a free live source is unavailable. Check Data providers for the exact route and configure optional Alpaca keys for IEX equities.
+- **An equity or option order is queued:** regular-session execution is intentional; there is no equity after-hours trading.
+- **A port is already in use:** stop the older development process or use the URL printed by the new process.
+- **Local data looks wrong after an upgrade:** first download any portfolio that still opens, stop the server, and use the recoverable reset workflow above. Never edit the SQLite files while the app is running.
+- **A package will not import:** imports reject malformed, incompatible, oversized, or internally inconsistent data instead of partially writing it.
+
+See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) before handing a build to another tester.
 
 ## Product rules
 

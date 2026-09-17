@@ -128,7 +128,7 @@ export default function Home() {
 
           {loading && <section className="empty-panel">Opening your local portfolio ledger…</section>}
           {!loading && !portfolioId && <section className="empty-panel"><strong>Create your first portfolio</strong><p>Choose your starting capital to begin trading current markets.</p><button className="trade-button" onClick={() => setCreateOpen(true)}>Create portfolio</button></section>}
-          {dashboard && active === "Overview" && <Overview dashboard={dashboard} allocation={allocation} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
+          {dashboard && active === "Overview" && <Overview dashboard={dashboard} allocation={allocation} onNavigate={setActive} onTrade={() => { setTradeSeed(null); setTradeOpen(true); }} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Positions" && <PositionsTable positions={dashboard.positions} expanded portfolioId={dashboard.portfolio.id} sessionOpen={dashboard.session.isOpen} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Strategies" && <StrategyBuilder portfolioId={dashboard.portfolio.id} buyingPower={dashboard.account.buyingPower} sessionOpen={dashboard.session.isOpen} onComplete={async (message) => { setNotice(message); setActive("Overview"); await refreshDashboard(); }} onError={setError} />}
           {dashboard && active === "Options chain" && <OptionsChainPanel portfolioId={dashboard.portfolio.id} onTrade={(contract, side) => { setTradeSeed({ symbol: contract.underlying, assetClass: "option", side, optionContract: contract }); setTradeOpen(true); }} onComplete={async (message) => { setNotice(message); await refreshDashboard(); }} onError={setError} />}
@@ -152,9 +152,10 @@ export default function Home() {
   );
 }
 
-function Overview({ dashboard, allocation, onRefresh, onNotice, onError }: { dashboard: Dashboard; allocation: { label: string; value: number }[]; onRefresh: () => Promise<void>; onNotice: (message: string) => void; onError: (message: string) => void }) {
+function Overview({ dashboard, allocation, onNavigate, onTrade, onRefresh, onNotice, onError }: { dashboard: Dashboard; allocation: { label: string; value: number }[]; onNavigate: (destination: string) => void; onTrade: () => void; onRefresh: () => Promise<void>; onNotice: (message: string) => void; onError: (message: string) => void }) {
   const { account } = dashboard;
   return <>
+    <LaunchChecklist dashboard={dashboard} onNavigate={onNavigate} onTrade={onTrade} />
     <section className="metrics-grid" aria-label="Portfolio summary">
       <article className="metric primary-metric"><span>Net liquidation value</span><strong>{money(account.netLiquidationValue)}</strong><small className={account.totalPnl >= 0 ? "positive" : "negative"}>{signedMoney(account.totalPnl)} since inception · {pct(account.totalReturn)}</small></article>
       <article className="metric"><span>Available buying power</span><strong>{money(account.buyingPower)}</strong><small>{account.reservedBuyingPower ? `${money(account.reservedBuyingPower)} reserved by active orders` : "Orders require sufficient buying power"}</small></article>
@@ -168,6 +169,18 @@ function Overview({ dashboard, allocation, onRefresh, onNotice, onError }: { das
     </section>
     <PositionsTable positions={dashboard.positions} portfolioId={dashboard.portfolio.id} sessionOpen={dashboard.session.isOpen} onRefresh={onRefresh} onNotice={onNotice} onError={onError} />
   </>;
+}
+
+function LaunchChecklist({ dashboard, onNavigate, onTrade }: { dashboard: Dashboard; onNavigate: (destination: string) => void; onTrade: () => void }) {
+  const steps = [
+    { label: "Create a portfolio", detail: "Opening cash is recorded in the immutable ledger.", complete: true, action: null },
+    { label: "Choose benchmarks", detail: "Search up to eight symbols for today’s comparison.", complete: dashboard.benchmarks.length > 0, action: () => { document.querySelector<HTMLButtonElement>(".benchmark-panel .text-button")?.click(); document.querySelector(".benchmark-panel")?.scrollIntoView({ behavior: "smooth", block: "center" }); } },
+    { label: "Set allocation targets", detail: "Define a 100% target mix without automatic rebalancing.", complete: dashboard.allocations.length > 0, action: () => onNavigate("Allocation") },
+    { label: "Place a test trade", detail: "Review the quote source, buying power, and execution model.", complete: dashboard.orders.length > 0, action: onTrade },
+  ];
+  const remaining = steps.filter((step) => !step.complete).length;
+  if (!remaining) return null;
+  return <section className="panel launch-checklist"><div className="panel-head"><div><span className="panel-title">Launch checklist</span><p>{remaining} step{remaining === 1 ? "" : "s"} left before this portfolio is ready to explore</p></div><span className="quality-badge">Local only</span></div><div className="launch-steps">{steps.map((step, index) => <button key={step.label} className={step.complete ? "complete" : ""} disabled={step.complete || !step.action} onClick={step.action || undefined}><span className="launch-step-number">{step.complete ? "✓" : index + 1}</span><span><strong>{step.label}</strong><small>{step.detail}</small></span><i>{step.complete ? "Done" : "Open"}</i></button>)}</div><p className="launch-footnote">Before sharing the app, export a portable portfolio from Settings so you have a recovery copy.</p></section>;
 }
 
 function PerformanceChart({ series }: { series: Dashboard["performanceSeries"] }) {
