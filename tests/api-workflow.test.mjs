@@ -89,6 +89,14 @@ test("invalid API values are rejected before they mutate the database", async ()
   assert.equal(counts.ledger, 1);
 });
 
+test("market snapshots batch and deduplicate supported symbols", async () => {
+  const snapshot = await api("/api/quotes?symbols=SPY,AAPL,SPY");
+  assert.equal(snapshot.response.status, 200);
+  assert.deepEqual(snapshot.body.quotes.map((item) => item.symbol), ["SPY", "AAPL"]);
+  assert.ok(snapshot.body.quotes.every((item) => item.quote.mark && item.quote.provider && item.quote.quality));
+  assert.match(snapshot.body.refreshedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test("portfolio archive and permanent deletion are explicit and isolated", async () => {
   const archived = await api("/api/portfolios", { method: "POST", body: { name: "Archive Candidate", startingCapital: 10_000, theme: "dark" } });
   const retained = await api("/api/portfolios", { method: "POST", body: { name: "Retained Portfolio", startingCapital: 20_000, theme: "light" } });

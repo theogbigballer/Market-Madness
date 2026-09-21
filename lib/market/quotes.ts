@@ -99,7 +99,7 @@ async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
   success("coinbase"); return quoteIsStale(quote.observedAt, new Date(), 90) ? { ...quote, quality: "stale" } : quote;
 }
 
-export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity"): Promise<ExtendedQuote> {
+export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity", applyCorporateActions = true): Promise<ExtendedQuote> {
   const symbol = symbolInput.trim().toUpperCase();
   if (!/^[A-Z0-9.^=-]{1,20}$/.test(symbol)) throw new Error("Enter a valid ticker symbol.");
   const cacheKey = `${assetClass}:${symbol}`;
@@ -113,7 +113,7 @@ export async function getMarketQuote(symbolInput: string, assetClass: AssetClass
     const cached = quoteCache.get(cacheKey), fallback = getDemoQuote(symbol, assetClass);
     quote = cached && Date.now() - cached.cachedAt < 5 * 60_000 ? { ...cached.quote, quality: "stale", provider: `${cached.quote.provider} · cached after provider failure` } : { ...fallback, provider: `${fallback.provider} · live provider unavailable` };
   }
-  if (assetClass !== "equity") return quote;
+  if (assetClass !== "equity" || !applyCorporateActions) return quote;
   try {
     await ensureCoreSchema();
     const actions = await getD1().prepare("SELECT ratio FROM corporate_actions WHERE instrument_id = ? AND action_type = 'split' AND status = 'applied' AND source = 'manual_simulation'").bind(`equity:${symbol}`).all<{ ratio: string }>();
