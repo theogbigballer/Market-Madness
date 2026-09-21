@@ -39,11 +39,13 @@ const equityTickers = ["SPY", "QQQ", "DIA", "IWM", "AAPL", "MSFT", "NVDA", "AMZN
 const cryptoTickers = ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "ADA-USD", "DOGE-USD", "LINK-USD", "LTC-USD", "BCH-USD"];
 const marketUniverseSymbols = [...equityTickers, "AVGO", "VTI"];
 const assetMap: Record<string, "equity" | "crypto" | "option" | "future" | "forward"> = { Equity: "equity", Crypto: "crypto", Options: "option", Futures: "future", Forward: "forward" };
+const exposureColors: Record<string, string> = { equity: "#00BFFF", crypto: "#FF8C00", future: "#FFD166", futures: "#FFD166", option: "#A78BFA", options: "#A78BFA", forward: "#FF6FAE", cash: "#65726B" };
 
 function money(value: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value); }
 function number(value: number, digits = 2) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value); }
 function signedMoney(value: number) { return `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`; }
 function pct(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`; }
+function exposureColor(assetClass: string) { return exposureColors[assetClass.toLowerCase()] || "#7F8C85"; }
 function changeWindow(points: { at: string }[]) {
   if (points.length < 2) return "Since first sample";
   const minutes = Math.max(1, Math.round((Date.parse(points.at(-1)?.at || "") - Date.parse(points[0].at)) / 60_000));
@@ -178,7 +180,7 @@ function Overview({ dashboard, allocation, onNavigate, onRefresh, onNotice, onEr
     </section>
     <section className="dashboard-grid">
       <PerformanceChart dashboard={dashboard} onRefresh={onRefresh} onNotice={onNotice} onError={onError} />
-      <article className="panel exposure-panel"><div className="panel-head"><div><StatLabel label="Gross exposure" explanation="The sum of the absolute market value of all positions, before long and short positions offset one another."/><p>By asset class</p></div></div><div className="exposure-total"><strong>{money(account.grossExposure)}</strong><span>{account.netLiquidationValue ? `${number(account.grossExposure / account.netLiquidationValue * 100)}% of equity` : "No exposure"}</span></div><div className="allocation-bar">{allocation.length ? allocation.map((item) => <i key={item.label} className={item.label} style={{ width: `${item.value * 100}%` }} />) : <i className="cash" style={{ width: "100%" }} />}</div><div className="legend">{allocation.length ? allocation.map((item) => <div key={item.label}><span><i className={`swatch ${item.label}`}/>{item.label}</span><strong>{number(item.value * 100)}%</strong></div>) : <div><span><i className="swatch cash"/>Cash</span><strong>100%</strong></div>}</div></article>
+      <article className="panel exposure-panel"><div className="panel-head"><div><StatLabel label="Gross exposure" explanation="The sum of the absolute market value of all positions, before long and short positions offset one another."/><p>By asset class</p></div></div><div className="exposure-total"><strong>{money(account.grossExposure)}</strong><span>{account.netLiquidationValue ? `${number(account.grossExposure / account.netLiquidationValue * 100)}% of equity` : "No exposure"}</span></div><div className="allocation-bar">{allocation.length ? allocation.map((item) => <i key={item.label} title={`${item.label} · ${number(item.value * 100)}%`} style={{ width: `${item.value * 100}%`, backgroundColor: exposureColor(item.label) }} />) : <i title="Cash · 100%" style={{ width: "100%", backgroundColor: exposureColor("cash") }} />}</div><div className="legend">{allocation.length ? allocation.map((item) => <div key={item.label}><span><i className="swatch" style={{ backgroundColor: exposureColor(item.label) }}/>{item.label}</span><strong>{number(item.value * 100)}%</strong></div>) : <div><span><i className="swatch" style={{ backgroundColor: exposureColor("cash") }}/>Cash</span><strong>100%</strong></div>}</div></article>
     </section>
     <PositionsTable positions={dashboard.positions} portfolioId={dashboard.portfolio.id} sessionOpen={dashboard.session.isOpen} onRefresh={onRefresh} onNotice={onNotice} onError={onError} />
   </>;
