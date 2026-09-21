@@ -113,8 +113,11 @@ export default function Home() {
 
       <section className="workspace">
         <header className="topbar">
-          <div className="portfolio-switcher"><span className="eyebrow">Portfolio</span><div><select aria-label="Selected portfolio" value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><button className="add-portfolio" onClick={() => setCreateOpen(true)} aria-label="Create portfolio">＋</button></div></div>
+          <div className="portfolio-switcher"><span className="eyebrow">Portfolio</span><div><select aria-label="Selected portfolio" value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><button className="portfolio-action new-portfolio" onClick={() => setCreateOpen(true)}>＋ New portfolio</button><button className="portfolio-action manage-portfolio" disabled={!portfolioId} onClick={() => setActive("Settings")}>Manage current</button></div></div>
           <div className="topbar-actions">
+            <select className="mobile-navigation" aria-label="Open workspace" value={active} onChange={(event) => { const destination = event.target.value; setActive(destination); if (destination === "Trade") setTradeOpen(true); }}>
+              {[...navigation, "Data providers", "Settings"].map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
             <div className="market-clock"><span className={`status-dot ${dashboard?.session.isOpen ? "" : "closed"}`} /><span><strong>{dashboard?.session.isOpen ? "US markets open" : "US markets closed"}</strong><small>{dashboard?.session.isOpen ? `Closes ${new Date(dashboard.session.closesAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : dashboard ? `Next open ${new Date(dashboard.session.nextOpenAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "Checking calendar"}</small></span></div>
             <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "◐"}</button>
             <button className="trade-button" disabled={!portfolioId} onClick={() => { setTradeSeed(null); setTradeOpen(true); }}>Place trade</button>

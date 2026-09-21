@@ -89,6 +89,30 @@ test("invalid API values are rejected before they mutate the database", async ()
   assert.equal(counts.ledger, 1);
 });
 
+test("portfolio archive and permanent deletion are explicit and isolated", async () => {
+  const archived = await api("/api/portfolios", { method: "POST", body: { name: "Archive Candidate", startingCapital: 10_000, theme: "dark" } });
+  const retained = await api("/api/portfolios", { method: "POST", body: { name: "Retained Portfolio", startingCapital: 20_000, theme: "light" } });
+  assert.equal(archived.response.status, 201);
+  assert.equal(retained.response.status, 201);
+
+  const archiveResult = await api("/api/portfolios", { method: "PATCH", body: { portfolioId: archived.body.id } });
+  assert.equal(archiveResult.response.status, 200);
+  assert.equal(archiveResult.body.status, "archived");
+  const activeAfterArchive = await api("/api/portfolios");
+  assert.equal(activeAfterArchive.body.portfolios.some((portfolio) => portfolio.id === archived.body.id), false);
+  assert.equal(activeAfterArchive.body.portfolios.some((portfolio) => portfolio.id === retained.body.id), true);
+
+  const deleteResult = await api(`/api/portfolios?portfolioId=${retained.body.id}`, { method: "DELETE" });
+  assert.equal(deleteResult.response.status, 200);
+  assert.equal(deleteResult.body.status, "deleted");
+  const retainedRows = await database.prepare("SELECT (SELECT COUNT(*) FROM portfolios WHERE id = ?) AS portfolios, (SELECT COUNT(*) FROM cash_ledger WHERE portfolio_id = ?) AS ledger").bind(retained.body.id, retained.body.id).first();
+  assert.deepEqual({ ...retainedRows }, { portfolios: 0, ledger: 0 });
+
+  const repeatedDelete = await api(`/api/portfolios?portfolioId=${retained.body.id}`, { method: "DELETE" });
+  assert.equal(repeatedDelete.response.status, 400);
+  assert.match(repeatedDelete.body.error, /not found/i);
+});
+
 test("idempotency keys collapse concurrent cash and order retries", async () => {
   const created = await api("/api/portfolios", { method: "POST", body: { name: "Retry Portfolio", startingCapital: 50_000, theme: "dark" } });
   const portfolioId = created.body.id;

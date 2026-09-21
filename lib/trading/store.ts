@@ -110,6 +110,8 @@ export async function archivePortfolio(portfolioId: string) {
 export async function permanentlyDeletePortfolio(portfolioId: string) {
   await ensureCoreSchema();
   const db = getD1();
+  const existing = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(portfolioId).first<{ id: string }>();
+  if (!existing) throw new Error("Portfolio not found.");
   await db.batch([
     db.prepare("DELETE FROM alert_rules WHERE portfolio_id = ?").bind(portfolioId),
     db.prepare("DELETE FROM alerts WHERE portfolio_id = ?").bind(portfolioId),
