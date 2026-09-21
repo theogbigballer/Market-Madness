@@ -43,6 +43,27 @@
       "when": 1789524267061,
       "tag": "0005_stiff_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789525677062,
+      "tag": "0006_productive_stark_industries",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1789567903893,
+      "tag": "0007_odd_brood",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1789575764976,
+      "tag": "0008_square_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }

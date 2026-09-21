@@ -47,6 +47,7 @@ export const instruments = sqliteTable("instruments", {
 
 export const orders = sqliteTable("orders", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  clientRequestId: text("client_request_id"),
   instrumentId: text("instrument_id").notNull().references(() => instruments.id),
   side: text("side", { enum: ["buy", "sell"] }).notNull(),
   orderType: text("order_type", { enum: ["market", "limit", "stop", "stop_limit"] }).notNull(),
@@ -56,7 +57,7 @@ export const orders = sqliteTable("orders", {
   limitPrice: text("limit_price"), stopPrice: text("stop_price"), scheduledFor: text("scheduled_for"),
   rejectionReason: text("rejection_reason"), reconstructionStatus: text("reconstruction_status", { enum: ["observed", "reconstructed"] }).notNull().default("observed"),
   submittedAt: text("submitted_at"), ...timestamps,
-}, (table) => [index("idx_orders_portfolio_status").on(table.portfolioId, table.status), index("idx_orders_scheduled_for").on(table.scheduledFor)]);
+}, (table) => [index("idx_orders_portfolio_status").on(table.portfolioId, table.status), index("idx_orders_scheduled_for").on(table.scheduledFor), uniqueIndex("idx_orders_portfolio_request").on(table.portfolioId, table.clientRequestId)]);
 
 export const orderLegs = sqliteTable("order_legs", {
   id: text("id").primaryKey(), orderId: text("order_id").notNull().references(() => orders.id),
@@ -68,7 +69,10 @@ export const fills = sqliteTable("fills", {
   id: text("id").primaryKey(), orderId: text("order_id").notNull().references(() => orders.id),
   portfolioId: text("portfolio_id").notNull().references(() => portfolios.id), instrumentId: text("instrument_id").notNull().references(() => instruments.id),
   quantity: text("quantity").notNull(), price: text("price").notNull(), commission: text("commission").notNull().default("0"),
-  slippage: text("slippage").notNull().default("0"), liquidityModel: text("liquidity_model").notNull(), executedAt: text("executed_at").notNull(),
+  slippage: text("slippage").notNull().default("0"), liquidityModel: text("liquidity_model").notNull(),
+  quoteProvider: text("quote_provider"), quoteQuality: text("quote_quality"), quoteObservedAt: text("quote_observed_at"),
+  quoteBid: text("quote_bid"), quoteAsk: text("quote_ask"), referencePrice: text("reference_price"), executionAssumptions: text("execution_assumptions", { mode: "json" }),
+  executedAt: text("executed_at").notNull(),
 }, (table) => [index("idx_fills_portfolio_time").on(table.portfolioId, table.executedAt), index("idx_fills_order").on(table.orderId)]);
 
 export const positionLots = sqliteTable("position_lots", {
@@ -121,6 +125,14 @@ export const alerts = sqliteTable("alerts", {
   severity: text("severity", { enum: ["info", "warning", "critical"] }).notNull(), eventType: text("event_type").notNull(),
   title: text("title").notNull(), message: text("message").notNull(), readAt: text("read_at"), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_alerts_portfolio_unread").on(table.portfolioId, table.readAt)]);
+
+export const alertRules = sqliteTable("alert_rules", {
+  id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
+  ruleType: text("rule_type", { enum: ["price", "pnl"] }).notNull(), symbol: text("symbol"), assetClass: text("asset_class"),
+  comparator: text("comparator", { enum: ["above", "below"] }).notNull(), threshold: text("threshold").notNull(),
+  status: text("status", { enum: ["active", "triggered", "disabled"] }).notNull().default("active"),
+  lastValue: text("last_value"), triggeredAt: text("triggered_at"), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_alert_rules_portfolio_status").on(table.portfolioId, table.status)]);
 
 export const processingEvents = sqliteTable("processing_events", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),

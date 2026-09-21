@@ -5,8 +5,8 @@ import { getMarketQuote, supportedSymbols } from "../../../lib/market/quotes";
 export async function GET(request: Request) {
   try {
     const params = new URL(request.url).searchParams;
-    const symbol = params.get("symbol");
-    if (!symbol) return Response.json({ symbols: supportedSymbols() });
+    const symbol = params.get("symbol"), search = params.get("search");
+    if (!symbol) return Response.json({ symbols: supportedSymbols(search || "", params.get("assetClass") === "crypto" ? "crypto" : params.get("assetClass") === "equity" ? "equity" : undefined) });
     const assetClass = (params.get("assetClass") || "equity") as AssetClass;
     if (assetClass === "option") return Response.json(await getOptionQuote({
       underlying: symbol, expiration: params.get("expiration") || "", strike: Number(params.get("strike")),
