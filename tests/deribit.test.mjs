@@ -14,7 +14,7 @@ test("Deribit mapping only enables supported USD crypto underlyings", () => {
   assert.equal(deribitBaseCurrency("ADA-USD"), null);
 });
 
-test("exact listed contracts preserve the Deribit contract size", () => {
+test("exact listed contracts can be matched without adopting the venue contract size", () => {
   const sol = { ...instrument(200, "call"), instrument_name: "SOL_USDC-25SEP26-200-C", base_currency: "SOL", contract_size: 10 };
   const matched = matchDeribitInstrument([sol], { underlying: "SOL-USD", expiration: "2026-09-25", strike: 200, right: "call" });
   assert.equal(matched?.contract_size, 10);

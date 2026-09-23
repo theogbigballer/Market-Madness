@@ -21,7 +21,7 @@ export function optionUnderlyingAssetClass(contract: Pick<OptionContract, "under
 }
 
 export function optionMultiplier(contract: Pick<OptionContract, "underlying" | "multiplier">) {
-  return contract.multiplier || (optionUnderlyingAssetClass(contract) === "crypto" ? 1 : 100);
+  return optionUnderlyingAssetClass(contract) === "crypto" ? 1 : contract.multiplier || 100;
 }
 
 function normalCdf(value: number) {
@@ -79,7 +79,7 @@ async function deribitOptionQuote(contract: OptionContract, instrument: DeribitI
     instrumentId: `crypto:${contract.underlying.toUpperCase()}`, provider: "Deribit USDC index", quality: "live" as const,
     bid: spot.toString(), ask: spot.toString(), last: spot.toString(), mark: spot.toString(), observedAt,
   } : suppliedUnderlyingQuote;
-  const analytics = await getOptionAnalytics({ ...contract, multiplier: instrument.contract_size }, underlyingQuote, validPrice(summary.mark_iv) ? Number(summary.mark_iv) / 100 : undefined);
+  const analytics = await getOptionAnalytics({ ...contract, multiplier: 1 }, underlyingQuote, validPrice(summary.mark_iv) ? Number(summary.mark_iv) / 100 : undefined);
   analytics.extrinsic = Math.max(0, mark - analytics.intrinsic);
   const quality = quoteIsStale(observedAt, new Date(), 90) ? "stale" as const : "live" as const;
   return {
@@ -87,7 +87,7 @@ async function deribitOptionQuote(contract: OptionContract, instrument: DeribitI
     bid: bid.toFixed(2), ask: ask.toFixed(2), last: (validPrice(summary.last) || mark).toFixed(2), mark: mark.toFixed(2), observedAt,
     name: `${contract.underlying.toUpperCase()} ${contract.expiration} ${contract.strike} ${contract.right.toUpperCase()} · European · Deribit`,
     averageDailyVolume: Number(summary.volume || 0), openInterest: Number(summary.open_interest || 0), analytics,
-    multiplier: instrument.contract_size, venueInstrument: instrument.instrument_name,
+    multiplier: 1, venueInstrument: instrument.instrument_name,
   };
 }
 
@@ -136,7 +136,7 @@ export async function optionChain(underlyingInput: string, selectedExpiration?: 
       const market = await getDeribitMarket(), listed = selectDeribitChain(market, underlying, selectedExpiration);
       if (listed?.strikes.length) {
         const quotedContracts = (await Promise.all(listed.instruments.map(async (instrument) => {
-          const contract = { underlying, expiration: listed.expiration, strike: instrument.strike, right: instrument.option_type, exerciseStyle: "european" as const, multiplier: instrument.contract_size, venueInstrument: instrument.instrument_name } satisfies OptionContract;
+          const contract = { underlying, expiration: listed.expiration, strike: instrument.strike, right: instrument.option_type, exerciseStyle: "european" as const, multiplier: 1, venueInstrument: instrument.instrument_name } satisfies OptionContract;
           const summary = market.summaries.get(instrument.instrument_name);
           const optionQuote = summary ? await deribitOptionQuote(contract, instrument, summary, market.observedAt, quote) : null;
           return optionQuote ? { contract, symbol: optionSymbol(contract), bid: Number(optionQuote.bid), ask: Number(optionQuote.ask), mark: Number(optionQuote.mark), quality: optionQuote.quality, provider: optionQuote.provider, volume: optionQuote.averageDailyVolume, openInterest: optionQuote.openInterest, analytics: optionQuote.analytics } : null;

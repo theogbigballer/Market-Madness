@@ -81,7 +81,7 @@ export function selectDeribitChain(market: DeribitMarket, underlying: string, se
     .filter((strike) => (["call", "put"] as const).every((right) => expiryInstruments.some((item) => item.strike === strike && item.option_type === right)))
     .sort((a, b) => Math.abs(a - spot) - Math.abs(b - spot)).slice(0, 13).sort((a, b) => a - b);
   const instruments = expiryInstruments.filter((item) => pairedStrikes.includes(item.strike));
-  return { base, expirations, expiration, strikes: pairedStrikes, instruments, spot: Number(spot), multiplier: Number(instruments[0]?.contract_size || listed[0].contract_size) };
+  return { base, expirations, expiration, strikes: pairedStrikes, instruments, spot: Number(spot), multiplier: 1 };
 }
 
 export async function getDeribitMarket(): Promise<DeribitMarket> {

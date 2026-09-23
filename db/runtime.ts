@@ -146,6 +146,7 @@ export async function ensureCoreSchema() {
       const orderColumns = await db.prepare("PRAGMA table_info(orders)").all<{ name: string }>();
       if (!orderColumns.results.some((column) => column.name === "client_request_id")) await db.prepare("ALTER TABLE orders ADD COLUMN client_request_id TEXT").run();
       await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_portfolio_request ON orders(portfolio_id, client_request_id)").run();
+      await db.prepare("UPDATE instruments SET multiplier = '1', updated_at = CURRENT_TIMESTAMP WHERE asset_class = 'option' AND underlying_instrument_id LIKE 'crypto:%' AND multiplier != '1'").run();
     })();
   }
   return ready;
