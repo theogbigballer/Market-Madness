@@ -18,6 +18,13 @@ button { font:inherit; }
 .nav-item.active { background:rgba(0,191,255,.12); color:#f1fbff; font-weight:650; }
 .nav-dot { width:6px; height:6px; border:1px solid currentColor; border-radius:50%; opacity:.75; }
 .nav-item.active .nav-dot { border:0; background:var(--accent); box-shadow:0 0 0 4px rgba(0,191,255,.12); }
+.advanced-nav { margin-top:4px; }
+.advanced-nav summary { list-style:none; }
+.advanced-nav summary::-webkit-details-marker { display:none; }
+.advanced-nav summary .nav-chevron { margin-left:auto; font-size:18px; line-height:1; transition:transform .18s ease; }
+.advanced-nav[open] summary .nav-chevron { transform:rotate(90deg); }
+.advanced-nav-items { display:grid; gap:1px; margin:2px 0 4px 17px; padding-left:8px; border-left:1px solid rgba(255,255,255,.09); }
+.advanced-nav-items .nav-item { padding-block:8px; font-size:12px; }
 .feed-card { margin-top:auto; padding:13px; border:1px solid rgba(255,255,255,.08); border-radius:10px; background:rgba(255,255,255,.025); display:grid; gap:5px; font-size:11px; color:#7f9188; }
 .feed-card div { display:flex; align-items:center; gap:7px; color:#bdcac3; }
 .feed-card strong { color:#f1f8f4; font-size:12px; }

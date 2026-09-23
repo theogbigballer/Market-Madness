@@ -34,7 +34,8 @@ type Dashboard = {
   quoteStatus: { provider: string; quality: string; refreshedAt: string };
 };
 
-const navigation = ["Overview", "Trade", "Strategies", "Options chain", "Positions", "Markets", "Orders", "P&L", "Blotter", "Risk", "Allocation", "Corporate actions", "Activity"];
+const navigation = ["Overview", "Trade", "Strategies", "Options chain", "Positions", "Markets", "Orders", "P&L", "Risk", "Allocation"];
+const advancedNavigation = ["Blotter", "Corporate actions", "Activity"];
 const equityTickers = ["SPY", "QQQ", "DIA", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B", "JPM", "V", "XOM", "UNH", "COST", "HD", "AMD", "NFLX"];
 const cryptoTickers = ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "XRP-USD", "ADA-USD", "DOGE-USD", "LINK-USD", "LTC-USD", "BCH-USD"];
 const marketUniverseSymbols = [...equityTickers, "AVGO", "VTI"];
@@ -68,6 +69,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [tradeOpen, setTradeOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [tradeSeed, setTradeSeed] = useState<{ symbol: string; assetClass: "equity" | "crypto" | "option" | "future" | "forward"; side?: "buy" | "sell"; quantity?: number; orderType?: "market" | "limit" | "stop" | "stop_limit"; limitPrice?: number; stopPrice?: number; optionContract?: OptionChainContract["contract"] } | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -119,6 +121,10 @@ export default function Home() {
         <nav aria-label="Primary navigation">
           <p className="nav-label">Workspace</p>
           {navigation.map((item) => <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => { setActive(item); if (item === "Trade") setTradeOpen(true); }}><span className="nav-dot" />{item}</button>)}
+          <details className="advanced-nav" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+            <summary className={advancedNavigation.includes(active) ? "nav-item active" : "nav-item"}><span className="nav-dot" /><span>Advanced settings</span><span className="nav-chevron">›</span></summary>
+            <div className="advanced-nav-items">{advancedNavigation.map((item) => <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => setActive(item)}><span className="nav-dot" />{item}</button>)}</div>
+          </details>
           <p className="nav-label secondary-label">System</p>
           <button className={active === "Data providers" ? "nav-item active" : "nav-item"} onClick={() => setActive("Data providers")}><span className="nav-dot" />Data providers</button><button className={active === "Settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("Settings")}><span className="nav-dot" />Settings</button>
         </nav>
@@ -129,8 +135,10 @@ export default function Home() {
         <header className="topbar">
           <div className="portfolio-switcher"><span className="eyebrow">Portfolio</span><div><select aria-label="Selected portfolio" value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)}>{portfolios.map((portfolio) => <option key={portfolio.id} value={portfolio.id}>{portfolio.name}</option>)}</select><button className="portfolio-action new-portfolio" onClick={() => setCreateOpen(true)}>＋ New portfolio</button><button className="portfolio-action manage-portfolio" disabled={!portfolioId} onClick={() => setActive("Settings")}>Manage current</button></div></div>
           <div className="topbar-actions">
-            <select className="mobile-navigation" aria-label="Open workspace" value={active} onChange={(event) => { const destination = event.target.value; setActive(destination); if (destination === "Trade") setTradeOpen(true); }}>
-              {[...navigation, "Data providers", "Settings"].map((item) => <option key={item} value={item}>{item}</option>)}
+            <select className="mobile-navigation" aria-label="Open workspace" value={active} onChange={(event) => { const destination = event.target.value; setActive(destination); if (advancedNavigation.includes(destination)) setAdvancedOpen(true); if (destination === "Trade") setTradeOpen(true); }}>
+              <optgroup label="Workspace">{navigation.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
+              <optgroup label="Advanced settings">{advancedNavigation.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
+              <optgroup label="System">{["Data providers", "Settings"].map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
             </select>
             <div className="market-clock"><span className={`status-dot ${dashboard?.session.isOpen ? "" : "closed"}`} /><span><strong>{dashboard?.session.isOpen ? "US markets open" : "US markets closed"}</strong><small>{dashboard?.session.isOpen ? `Closes ${new Date(dashboard.session.closesAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : dashboard ? `Next open ${new Date(dashboard.session.nextOpenAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "Checking calendar"}</small></span></div>
             <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "◐"}</button>
