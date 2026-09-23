@@ -89,6 +89,68 @@ test("invalid API values are rejected before they mutate the database", async ()
   assert.equal(counts.ledger, 1);
 });
 
+test("market snapshots batch and deduplicate supported symbols", async () => {
+  const snapshot = await api("/api/quotes?symbols=SPY,AAPL,SPY");
+  assert.equal(snapshot.response.status, 200);
+  assert.deepEqual(snapshot.body.quotes.map((item) => item.symbol), ["SPY", "AAPL"]);
+  assert.ok(snapshot.body.quotes.every((item) => item.quote.mark && item.quote.provider && item.quote.quality));
+  assert.match(snapshot.body.refreshedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("single and portfolio liquidation are reduce-only, audited, and cancel active orders", async () => {
+  const created = await api("/api/portfolios", { method: "POST", body: { name: "Liquidation Portfolio", startingCapital: 100_000, advancedDerivativesEnabled: true, theme: "dark" } });
+  const portfolioId = created.body.id, deliveryDate = new Date(Date.now() + 180 * 86_400_000).toISOString().slice(0, 10);
+  const apple = { underlying: "AAPL", deliveryDate, deliveryPrice: 250, quantityUnit: "shares" };
+  const bitcoin = { underlying: "BTC-USD", deliveryDate, deliveryPrice: 90_000, quantityUnit: "units" };
+  await api("/api/orders", { method: "POST", body: { portfolioId, symbol: "AAPL", assetClass: "forward", side: "buy", orderType: "market", quantity: 2, timeInForce: "gtc", forwardContract: apple } });
+  await api("/api/orders", { method: "POST", body: { portfolioId, symbol: "BTC-USD", assetClass: "forward", side: "sell", orderType: "market", quantity: 1, timeInForce: "gtc", forwardContract: bitcoin } });
+  const resting = await api("/api/orders", { method: "POST", body: { portfolioId, symbol: "AAPL", assetClass: "forward", side: "buy", orderType: "limit", limitPrice: 1, quantity: 1, timeInForce: "gtc", forwardContract: apple } });
+  assert.equal(resting.body.status, "accepted");
+
+  const before = await api(`/api/dashboard?portfolioId=${portfolioId}`);
+  const applePosition = before.body.positions.find((position) => position.symbol.includes("AAPL"));
+  const one = await api("/api/liquidations", { method: "POST", headers: { "idempotency-key": "liquidate-one-0001" }, body: { portfolioId, instrumentId: applePosition.instrumentId } });
+  assert.equal(one.response.status, 201, JSON.stringify(one.body));
+  assert.equal(one.body.results.length, 1);
+  assert.equal(one.body.results[0].status, "filled");
+  assert.equal(one.body.canceledOrders, 1);
+
+  const afterOne = await api(`/api/dashboard?portfolioId=${portfolioId}`);
+  assert.equal(afterOne.body.positions.length, 1);
+  assert.equal(afterOne.body.positions[0].quantity, -1);
+  const all = await api("/api/liquidations", { method: "POST", headers: { "idempotency-key": "liquidate-all-0001" }, body: { portfolioId } });
+  assert.equal(all.response.status, 201);
+  assert.equal(all.body.results[0].status, "filled");
+  const afterAll = await api(`/api/dashboard?portfolioId=${portfolioId}`);
+  assert.equal(afterAll.body.positions.length, 0);
+  const closures = await database.prepare("SELECT closure_reason FROM lot_closures WHERE portfolio_id = ? ORDER BY created_at").bind(portfolioId).all();
+  assert.deepEqual(closures.results.map((row) => row.closure_reason), ["user_liquidation", "user_liquidation"]);
+});
+
+test("portfolio archive and permanent deletion are explicit and isolated", async () => {
+  const archived = await api("/api/portfolios", { method: "POST", body: { name: "Archive Candidate", startingCapital: 10_000, theme: "dark" } });
+  const retained = await api("/api/portfolios", { method: "POST", body: { name: "Retained Portfolio", startingCapital: 20_000, theme: "light" } });
+  assert.equal(archived.response.status, 201);
+  assert.equal(retained.response.status, 201);
+
+  const archiveResult = await api("/api/portfolios", { method: "PATCH", body: { portfolioId: archived.body.id } });
+  assert.equal(archiveResult.response.status, 200);
+  assert.equal(archiveResult.body.status, "archived");
+  const activeAfterArchive = await api("/api/portfolios");
+  assert.equal(activeAfterArchive.body.portfolios.some((portfolio) => portfolio.id === archived.body.id), false);
+  assert.equal(activeAfterArchive.body.portfolios.some((portfolio) => portfolio.id === retained.body.id), true);
+
+  const deleteResult = await api(`/api/portfolios?portfolioId=${retained.body.id}`, { method: "DELETE" });
+  assert.equal(deleteResult.response.status, 200);
+  assert.equal(deleteResult.body.status, "deleted");
+  const retainedRows = await database.prepare("SELECT (SELECT COUNT(*) FROM portfolios WHERE id = ?) AS portfolios, (SELECT COUNT(*) FROM cash_ledger WHERE portfolio_id = ?) AS ledger").bind(retained.body.id, retained.body.id).first();
+  assert.deepEqual({ ...retainedRows }, { portfolios: 0, ledger: 0 });
+
+  const repeatedDelete = await api(`/api/portfolios?portfolioId=${retained.body.id}`, { method: "DELETE" });
+  assert.equal(repeatedDelete.response.status, 400);
+  assert.match(repeatedDelete.body.error, /not found/i);
+});
+
 test("idempotency keys collapse concurrent cash and order retries", async () => {
   const created = await api("/api/portfolios", { method: "POST", body: { name: "Retry Portfolio", startingCapital: 50_000, theme: "dark" } });
   const portfolioId = created.body.id;

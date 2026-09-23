@@ -33,7 +33,7 @@ export function strategyLimitIsMarketable(side: "buy" | "sell", currentNetPrice:
   return side === "buy" ? currentNetPrice <= limitPrice : Math.abs(currentNetPrice) >= limitPrice;
 }
 
-export type OptionMarginPosition = { underlying: string; expiration: string; right: "call" | "put"; strike: number; quantity: number; spot: number; mark: number };
+export type OptionMarginPosition = { underlying: string; expiration: string; right: "call" | "put"; strike: number; quantity: number; spot: number; mark: number; multiplier?: number };
 
 export function calculatePortfolioOptionMargin(positions: OptionMarginPosition[], equityShares: Record<string, number>) {
   const groups = new Map<string, OptionMarginPosition[]>();
@@ -49,20 +49,21 @@ export function calculatePortfolioOptionMargin(positions: OptionMarginPosition[]
       const shorts = legs.filter((leg) => leg.right === right && leg.quantity < 0).map((leg) => ({ ...leg, remaining: Math.abs(leg.quantity) }));
       let required = 0, uncovered = 0;
       for (const short of shorts) {
+        const multiplier = short.multiplier ?? 100;
         if (right === "call") {
-          const cover = Math.min(short.remaining, Math.floor(Math.max(0, shares[short.underlying] || 0) / 100));
-          short.remaining -= cover; shares[short.underlying] = (shares[short.underlying] || 0) - cover * 100; coveredContracts += cover;
+          const cover = Math.min(short.remaining, Math.floor(Math.max(0, shares[short.underlying] || 0) / multiplier));
+          short.remaining -= cover; shares[short.underlying] = (shares[short.underlying] || 0) - cover * multiplier; coveredContracts += cover;
         }
         const protective = longs.filter((long) => long.available > 0 && (right === "call" ? long.strike > short.strike : long.strike < short.strike)).sort((left, rightLeg) => Math.abs(left.strike - short.strike) - Math.abs(rightLeg.strike - short.strike));
         for (const long of protective) {
           if (!short.remaining) break;
           const paired = Math.min(short.remaining, long.available), width = Math.abs(long.strike - short.strike);
-          required += paired * width * 100; definedRiskOffsets += paired * Math.max(0, short.spot * 0.2 - width) * 100;
+          required += paired * width * multiplier; definedRiskOffsets += paired * Math.max(0, short.spot * 0.2 - width) * multiplier;
           short.remaining -= paired; long.available -= paired;
         }
         if (short.remaining) {
           const outOfMoney = right === "call" ? Math.max(0, short.strike - short.spot) : Math.max(0, short.spot - short.strike);
-          const perContract = Math.max(short.spot * 0.2 - outOfMoney + short.mark, short.spot * 0.1 + short.mark) * 100;
+          const perContract = Math.max(short.spot * 0.2 - outOfMoney + short.mark, short.spot * 0.1 + short.mark) * multiplier;
           required += short.remaining * perContract; uncovered += short.remaining; uncoveredContracts += short.remaining;
         }
       }

@@ -1,7 +1,9 @@
 import type { AssetClass, NormalizedQuote } from "../domain";
-import { quoteIsStale } from "../domain";
+import { classifyEquityQuoteQuality, quoteIsStale } from "../domain";
 import { env } from "cloudflare:workers";
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
+import { getUsEquitySession } from "./exchange-calendar";
+import { deribitDiagnostics } from "./deribit";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -30,6 +32,7 @@ const catalog: Record<string, { name: string; base: number; spread: number; aver
   "ETH-USD": { name: "Ether / US Dollar", base: 4480, spread: 1.4, averageDailyVolume: 80_000 },
   "SOL-USD": { name: "Solana / US Dollar", base: 236, spread: 0.18, averageDailyVolume: 160_000 },
   "AVAX-USD": { name: "Avalanche / US Dollar", base: 31, spread: 0.05, averageDailyVolume: 90_000 },
+  "XRP-USD": { name: "XRP / US Dollar", base: 2.85, spread: 0.002, averageDailyVolume: 450_000 },
   "ADA-USD": { name: "Cardano / US Dollar", base: 0.86, spread: 0.002, averageDailyVolume: 400_000 },
   "DOGE-USD": { name: "Dogecoin / US Dollar", base: 0.24, spread: 0.001, averageDailyVolume: 500_000 },
   "LINK-USD": { name: "Chainlink / US Dollar", base: 22.4, spread: 0.03, averageDailyVolume: 110_000 },
@@ -68,6 +71,7 @@ export function marketDataDiagnostics() {
   return [
     { id: "alpaca", name: "Alpaca IEX", assetClasses: ["US equities"], mode: runtime.ALPACA_API_KEY_ID && runtime.ALPACA_API_SECRET_KEY ? "configured" : "not configured", priority: 1, ...providerState.alpaca },
     { id: "coinbase", name: "Coinbase Exchange", assetClasses: ["Crypto / USD"], mode: "public API", priority: 1, ...providerState.coinbase },
+    deribitDiagnostics(),
     { id: "simulation", name: "Market Madness fallback", assetClasses: ["Equities", "Crypto", "Derivatives"], mode: "always available", priority: 2, lastSuccess: new Date().toISOString(), lastFailure: null, consecutiveFailures: 0, lastError: null },
   ];
 }
@@ -81,11 +85,23 @@ async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   });
   if (!response.ok) throw new Error(`Alpaca returned ${response.status}.`);
   const payload = await response.json() as { quote?: { bp?: number; ap?: number; t?: string } };
-  const item = catalog[symbol] || { name: symbol, averageDailyVolume: 2_000_000 }, bid = payload.quote?.bp, ask = payload.quote?.ap;
-  if (!bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
+  const item = catalog[symbol] || { name: symbol, spread: 0.05, averageDailyVolume: 2_000_000 };
+  let bid = payload.quote?.bp, ask = payload.quote?.ap, observedAt = payload.quote?.t || new Date().toISOString(), provider = "Alpaca IEX";
+  if (!bid || !ask) {
+    const tradeResponse = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`, {
+      headers: { "APCA-API-KEY-ID": runtime.ALPACA_API_KEY_ID, "APCA-API-SECRET-KEY": runtime.ALPACA_API_SECRET_KEY }, signal: AbortSignal.timeout(4_000),
+    });
+    if (!tradeResponse.ok) throw new Error(`Alpaca latest trade returned ${tradeResponse.status}.`);
+    const tradePayload = await tradeResponse.json() as { trade?: { p?: number; t?: string } };
+    const trade = tradePayload.trade?.p;
+    if (!trade) throw new Error("Alpaca did not return a usable quote or trade.");
+    const spread = Math.max(item.spread, trade * 0.0001);
+    bid = trade - spread / 2; ask = trade + spread / 2; observedAt = tradePayload.trade?.t || observedAt; provider = "Alpaca IEX · latest trade reference";
+  }
   const mark = (bid + ask) / 2;
-  const quote = { instrumentId: `equity:${symbol}`, provider: "Alpaca IEX", quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt: payload.quote?.t || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume } satisfies ExtendedQuote;
-  success("alpaca"); return quoteIsStale(quote.observedAt, new Date(), 90) ? { ...quote, quality: "stale" } : quote;
+  const quote = { instrumentId: `equity:${symbol}`, provider, quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt, name: item.name, averageDailyVolume: item.averageDailyVolume } satisfies ExtendedQuote;
+  success("alpaca");
+  return { ...quote, quality: classifyEquityQuoteQuality(quote.observedAt, getUsEquitySession().isOpen) };
 }
 
 async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
@@ -99,7 +115,7 @@ async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {
   success("coinbase"); return quoteIsStale(quote.observedAt, new Date(), 90) ? { ...quote, quality: "stale" } : quote;
 }
 
-export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity"): Promise<ExtendedQuote> {
+export async function getMarketQuote(symbolInput: string, assetClass: AssetClass = "equity", applyCorporateActions = true): Promise<ExtendedQuote> {
   const symbol = symbolInput.trim().toUpperCase();
   if (!/^[A-Z0-9.^=-]{1,20}$/.test(symbol)) throw new Error("Enter a valid ticker symbol.");
   const cacheKey = `${assetClass}:${symbol}`;
@@ -113,7 +129,7 @@ export async function getMarketQuote(symbolInput: string, assetClass: AssetClass
     const cached = quoteCache.get(cacheKey), fallback = getDemoQuote(symbol, assetClass);
     quote = cached && Date.now() - cached.cachedAt < 5 * 60_000 ? { ...cached.quote, quality: "stale", provider: `${cached.quote.provider} · cached after provider failure` } : { ...fallback, provider: `${fallback.provider} · live provider unavailable` };
   }
-  if (assetClass !== "equity") return quote;
+  if (assetClass !== "equity" || !applyCorporateActions) return quote;
   try {
     await ensureCoreSchema();
     const actions = await getD1().prepare("SELECT ratio FROM corporate_actions WHERE instrument_id = ? AND action_type = 'split' AND status = 'applied' AND source = 'manual_simulation'").bind(`equity:${symbol}`).all<{ ratio: string }>();

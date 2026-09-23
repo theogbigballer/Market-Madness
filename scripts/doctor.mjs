@@ -29,7 +29,7 @@ export async function inspectProject() {
   let liveEquityConfigured = false;
   if (await exists(".env")) {
     const env = await readFile(envPath, "utf8");
-    liveEquityConfigured = /(?:^|\n)ALPACA_KEY_ID=.+/.test(env) && /(?:^|\n)ALPACA_SECRET_KEY=.+/.test(env);
+    liveEquityConfigured = /(?:^|\n)ALPACA_API_KEY_ID=.+/.test(env) && /(?:^|\n)ALPACA_API_SECRET_KEY=.+/.test(env);
   }
   return { checks, liveEquityConfigured, hasLocalDatabase: await exists(".wrangler/state/v3/d1") };
 }

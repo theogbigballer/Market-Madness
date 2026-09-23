@@ -1,5 +1,5 @@
 import type { OptionContract, OptionGreeks } from "../market/options";
-import { getOptionQuote, optionSymbol } from "../market/options";
+import { getOptionQuote, optionMultiplier, optionSymbol, optionUnderlyingAssetClass } from "../market/options";
 import { getMarketQuote } from "../market/quotes";
 
 export type OptionStrategyLeg = { contract: OptionContract; side: "buy" | "sell"; ratio: number };
@@ -10,14 +10,14 @@ export async function previewOptionStrategy(legs: OptionStrategyLeg[], units = 1
   const underlying = legs[0].contract.underlying.toUpperCase(), expiration = legs[0].contract.expiration;
   if (legs.some((leg) => leg.contract.underlying.toUpperCase() !== underlying || leg.contract.expiration !== expiration)) throw new Error("All legs must share an underlying and expiration.");
   if (legs.some((leg) => !Number.isInteger(leg.ratio) || leg.ratio < 1 || leg.contract.strike <= 0)) throw new Error("Each leg needs a positive whole-number ratio and strike.");
-  const underlyingQuote = await getMarketQuote(underlying, "equity");
+  const multiplier = optionMultiplier(legs[0].contract), underlyingQuote = await getMarketQuote(underlying, optionUnderlyingAssetClass(legs[0].contract));
   const quoted = await Promise.all(legs.map(async (leg) => ({ ...leg, quote: await getOptionQuote({ ...leg.contract, underlying }, underlyingQuote) })));
-  const netDebitPerUnit = quoted.reduce((sum, leg) => sum + (leg.side === "buy" ? Number(leg.quote.ask) : -Number(leg.quote.bid)) * leg.ratio * 100, 0);
-  const netCallSlope = legs.reduce((sum, leg) => sum + (leg.contract.right === "call" ? (leg.side === "buy" ? 1 : -1) * leg.ratio * 100 : 0), 0);
+  const netDebitPerUnit = quoted.reduce((sum, leg) => sum + (leg.side === "buy" ? Number(leg.quote.ask) : -Number(leg.quote.bid)) * leg.ratio * multiplier, 0);
+  const netCallSlope = legs.reduce((sum, leg) => sum + (leg.contract.right === "call" ? (leg.side === "buy" ? 1 : -1) * leg.ratio * multiplier : 0), 0);
   const strikes = [...new Set(legs.map((leg) => leg.contract.strike))].sort((a, b) => a - b);
   const payoff = (spot: number) => legs.reduce((sum, leg) => {
     const intrinsic = Math.max(0, leg.contract.right === "call" ? spot - leg.contract.strike : leg.contract.strike - spot);
-    return sum + intrinsic * leg.ratio * 100 * (leg.side === "buy" ? 1 : -1);
+    return sum + intrinsic * leg.ratio * multiplier * (leg.side === "buy" ? 1 : -1);
   }, -netDebitPerUnit);
   const checkpoints = [0, ...strikes, Math.max(...strikes) * 4];
   const values = checkpoints.map(payoff);
@@ -32,7 +32,7 @@ export async function previewOptionStrategy(legs: OptionStrategyLeg[], units = 1
     if (leftPnl * rightPnl < 0) breakevens.push(left + (right - left) * (-leftPnl / (rightPnl - leftPnl)));
   }
   const greeks = quoted.reduce<OptionGreeks>((total, leg) => {
-    const sign = leg.side === "buy" ? 1 : -1, scale = sign * leg.ratio * units * 100;
+    const sign = leg.side === "buy" ? 1 : -1, scale = sign * leg.ratio * units * multiplier;
     total.delta += leg.quote.analytics.greeks.delta * scale;
     total.gamma += leg.quote.analytics.greeks.gamma * scale;
     total.theta += leg.quote.analytics.greeks.theta * scale;
@@ -42,7 +42,7 @@ export async function previewOptionStrategy(legs: OptionStrategyLeg[], units = 1
   return {
     underlying, expiration, units,
     netDebit: netDebitPerUnit * units,
-    netPrice: netDebitPerUnit / 100,
+    netPrice: netDebitPerUnit / multiplier,
     maxLoss: maxLossPerUnit === null ? null : maxLossPerUnit * units,
     maxProfit: maxProfitPerUnit === null ? null : maxProfitPerUnit * units,
     breakevens: [...new Set(breakevens.map((value) => Number(value.toFixed(2))))], greeks,
