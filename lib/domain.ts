@@ -1,5 +1,5 @@
 export type AssetClass = "equity" | "crypto" | "future" | "forward" | "option" | "cash";
-export type QuoteQuality = "live" | "delayed" | "indicative" | "simulated" | "stale";
+export type QuoteQuality = "live" | "delayed" | "indicative" | "simulated" | "closed" | "stale";
 export type OrderStatus = "draft" | "submitted" | "scheduled" | "accepted" | "partially_filled" | "filled" | "canceled" | "expired" | "rejected";
 
 export interface MarketSession { calendarId: string; opensAt: string; closesAt: string; isOpen: boolean; nextOpenAt?: string; }
@@ -20,4 +20,9 @@ export function shouldScheduleEquityOrder(assetClass: AssetClass, session: Marke
 
 export function quoteIsStale(observedAt: string, now = new Date(), thresholdSeconds = 45) {
   return now.getTime() - new Date(observedAt).getTime() > thresholdSeconds * 1000;
+}
+
+export function classifyEquityQuoteQuality(observedAt: string, sessionOpen: boolean, now = new Date(), thresholdSeconds = 90): QuoteQuality {
+  if (!sessionOpen) return "closed";
+  return quoteIsStale(observedAt, now, thresholdSeconds) ? "stale" : "live";
 }

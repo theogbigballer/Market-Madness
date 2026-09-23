@@ -1,7 +1,8 @@
 import type { AssetClass, NormalizedQuote } from "../domain";
-import { quoteIsStale } from "../domain";
+import { classifyEquityQuoteQuality, quoteIsStale } from "../domain";
 import { env } from "cloudflare:workers";
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
+import { getUsEquitySession } from "./exchange-calendar";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -85,7 +86,8 @@ async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   if (!bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
   const mark = (bid + ask) / 2;
   const quote = { instrumentId: `equity:${symbol}`, provider: "Alpaca IEX", quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt: payload.quote?.t || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume } satisfies ExtendedQuote;
-  success("alpaca"); return quoteIsStale(quote.observedAt, new Date(), 90) ? { ...quote, quality: "stale" } : quote;
+  success("alpaca");
+  return { ...quote, quality: classifyEquityQuoteQuality(quote.observedAt, getUsEquitySession().isOpen) };
 }
 
 async function coinbaseQuote(symbol: string): Promise<ExtendedQuote | null> {

@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { classifyEquityQuoteQuality } from "../lib/domain.ts";
 import { enumValue, optionalBoolean, optionalPositiveNumber, positiveNumber, requiredString } from "../lib/trading/validation.ts";
+
+test("equity quote quality distinguishes a closed market from a broken feed", () => {
+  const now = new Date("2026-09-22T22:30:00.000Z");
+  const oldQuote = "2026-09-22T20:00:00.000Z";
+  assert.equal(classifyEquityQuoteQuality(oldQuote, false, now), "closed");
+  assert.equal(classifyEquityQuoteQuality(oldQuote, true, now), "stale");
+  assert.equal(classifyEquityQuoteQuality("2026-09-22T22:29:30.000Z", false, now), "closed");
+  assert.equal(classifyEquityQuoteQuality("2026-09-22T22:29:30.000Z", true, now), "live");
+});
 
 test("request validation normalizes valid user input", () => {
   assert.equal(requiredString("  Portfolio  ", "Name"), "Portfolio");
