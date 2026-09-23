@@ -3,6 +3,7 @@ import { classifyEquityQuoteQuality, quoteIsStale } from "../domain";
 import { env } from "cloudflare:workers";
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
 import { getUsEquitySession } from "./exchange-calendar";
+import { deribitDiagnostics } from "./deribit";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -31,6 +32,7 @@ const catalog: Record<string, { name: string; base: number; spread: number; aver
   "ETH-USD": { name: "Ether / US Dollar", base: 4480, spread: 1.4, averageDailyVolume: 80_000 },
   "SOL-USD": { name: "Solana / US Dollar", base: 236, spread: 0.18, averageDailyVolume: 160_000 },
   "AVAX-USD": { name: "Avalanche / US Dollar", base: 31, spread: 0.05, averageDailyVolume: 90_000 },
+  "XRP-USD": { name: "XRP / US Dollar", base: 2.85, spread: 0.002, averageDailyVolume: 450_000 },
   "ADA-USD": { name: "Cardano / US Dollar", base: 0.86, spread: 0.002, averageDailyVolume: 400_000 },
   "DOGE-USD": { name: "Dogecoin / US Dollar", base: 0.24, spread: 0.001, averageDailyVolume: 500_000 },
   "LINK-USD": { name: "Chainlink / US Dollar", base: 22.4, spread: 0.03, averageDailyVolume: 110_000 },
@@ -69,6 +71,7 @@ export function marketDataDiagnostics() {
   return [
     { id: "alpaca", name: "Alpaca IEX", assetClasses: ["US equities"], mode: runtime.ALPACA_API_KEY_ID && runtime.ALPACA_API_SECRET_KEY ? "configured" : "not configured", priority: 1, ...providerState.alpaca },
     { id: "coinbase", name: "Coinbase Exchange", assetClasses: ["Crypto / USD"], mode: "public API", priority: 1, ...providerState.coinbase },
+    deribitDiagnostics(),
     { id: "simulation", name: "Market Madness fallback", assetClasses: ["Equities", "Crypto", "Derivatives"], mode: "always available", priority: 2, lastSuccess: new Date().toISOString(), lastFailure: null, consecutiveFailures: 0, lastError: null },
   ];
 }

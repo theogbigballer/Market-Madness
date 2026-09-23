@@ -238,7 +238,7 @@ type ActiveOrderRow = { id: string; client_request_id: string | null; instrument
 
 async function quoteForInstrument(order: ActiveOrderRow) {
   if (order.asset_class === "option" && order.expiration_at && order.strike && order.option_right && order.exercise_style) {
-    return getOptionQuote({ underlying: (order.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: order.expiration_at.slice(0, 10), strike: Number(order.strike), right: order.option_right, exerciseStyle: order.exercise_style });
+    return getOptionQuote({ underlying: (order.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: order.expiration_at.slice(0, 10), strike: Number(order.strike), right: order.option_right, exerciseStyle: order.exercise_style, multiplier: Number(order.multiplier) });
   }
   if (order.asset_class === "future") {
     const contract = findFuture(order.symbol);
@@ -280,10 +280,10 @@ async function reservedBuyingPower(portfolioId: string) {
 }
 
 async function strategyLegs(orderId: string): Promise<OptionStrategyLeg[]> {
-  const result = await getD1().prepare(`SELECT ol.side, ol.ratio_quantity, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style
+  const result = await getD1().prepare(`SELECT ol.side, ol.ratio_quantity, i.underlying_instrument_id, i.expiration_at, i.strike, i.option_right, i.exercise_style, i.multiplier
     FROM order_legs ol JOIN instruments i ON i.id = ol.instrument_id WHERE ol.order_id = ? ORDER BY ol.id`).bind(orderId)
-    .all<{ side: "buy" | "sell"; ratio_quantity: string; underlying_instrument_id: string; expiration_at: string; strike: string; option_right: "call" | "put"; exercise_style: "american" | "european" }>();
-  return result.results.map((leg) => ({ side: leg.side, ratio: Number(leg.ratio_quantity), contract: { underlying: leg.underlying_instrument_id.replace(/^(equity|crypto):/, ""), expiration: leg.expiration_at.slice(0, 10), strike: Number(leg.strike), right: leg.option_right, exerciseStyle: leg.exercise_style } }));
+    .all<{ side: "buy" | "sell"; ratio_quantity: string; underlying_instrument_id: string; expiration_at: string; strike: string; option_right: "call" | "put"; exercise_style: "american" | "european"; multiplier: string }>();
+  return result.results.map((leg) => ({ side: leg.side, ratio: Number(leg.ratio_quantity), contract: { underlying: leg.underlying_instrument_id.replace(/^(equity|crypto):/, ""), expiration: leg.expiration_at.slice(0, 10), strike: Number(leg.strike), right: leg.option_right, exerciseStyle: leg.exercise_style, multiplier: Number(leg.multiplier) } }));
 }
 
 async function executeOptionStrategyOrder(portfolioId: string, orderId: string) {
@@ -407,7 +407,7 @@ export async function liquidatePositions(input: { portfolioId: string; instrumen
   for (const position of positions) {
     const row = position.row;
     if (row.asset_class === "cash") throw new Error("Cash balances cannot be liquidated as positions.");
-    const optionContract = row.asset_class === "option" && row.expiration_at && row.strike && row.option_right && row.exercise_style ? { underlying: (row.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: row.expiration_at.slice(0, 10), strike: Number(row.strike), right: row.option_right, exerciseStyle: row.exercise_style } : undefined;
+    const optionContract = row.asset_class === "option" && row.expiration_at && row.strike && row.option_right && row.exercise_style ? { underlying: (row.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: row.expiration_at.slice(0, 10), strike: Number(row.strike), right: row.option_right, exerciseStyle: row.exercise_style, multiplier: Number(row.multiplier) } : undefined;
     const futureContract = row.asset_class === "future" ? findFuture(row.symbol) : undefined;
     const forwardContract = row.asset_class === "forward" && row.expiration_at && row.strike && row.underlying_instrument_id ? { underlying: row.underlying_instrument_id.replace(/^(equity|crypto):/, ""), deliveryDate: row.expiration_at.slice(0, 10), deliveryPrice: Number(row.strike), quantityUnit: "units" as const } : undefined;
     if (row.asset_class === "future" && !futureContract) throw new Error(`Listed futures contract ${row.symbol} is unavailable.`);
@@ -612,7 +612,7 @@ async function forceMarginLiquidation(portfolioId: string, equity: number, maint
     if (!requiresMarginLiquidation(equity, remainingMaintenance)) break;
     const quantity = Math.abs(Number(lot.remaining_quantity)), side: "buy" | "sell" = Number(lot.remaining_quantity) > 0 ? "sell" : "buy";
     const quote = lot.asset_class === "option" && lot.expiration_at && lot.strike && lot.option_right && lot.exercise_style
-      ? await getOptionQuote({ underlying: (lot.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: lot.expiration_at.slice(0, 10), strike: Number(lot.strike), right: lot.option_right, exerciseStyle: lot.exercise_style })
+      ? await getOptionQuote({ underlying: (lot.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: lot.expiration_at.slice(0, 10), strike: Number(lot.strike), right: lot.option_right, exerciseStyle: lot.exercise_style, multiplier: Number(lot.multiplier) })
       : lot.asset_class === "future" && findFuture(lot.symbol) ? await getFutureQuote(findFuture(lot.symbol)!)
       : lot.asset_class === "forward" && lot.expiration_at && lot.strike && lot.underlying_instrument_id ? await getForwardQuote({ underlying: lot.underlying_instrument_id.replace(/^(equity|crypto):/, ""), deliveryDate: lot.expiration_at.slice(0, 10), deliveryPrice: Number(lot.strike), quantityUnit: "units" })
       : await getMarketQuote(lot.symbol, lot.asset_class);
@@ -685,7 +685,7 @@ export async function getDashboard(portfolioId: string, afterLiquidation = false
   for (const lot of lots) {
     const quantity = Number(lot.remaining_quantity), multiplier = Number(lot.multiplier);
     const optionContract = lot.asset_class === "option" && lot.expiration_at && lot.strike && lot.option_right && lot.exercise_style
-      ? { underlying: (lot.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: lot.expiration_at.slice(0, 10), strike: Number(lot.strike), right: lot.option_right, exerciseStyle: lot.exercise_style }
+      ? { underlying: (lot.underlying_instrument_id || "equity:SPY").replace(/^(equity|crypto):/, ""), expiration: lot.expiration_at.slice(0, 10), strike: Number(lot.strike), right: lot.option_right, exerciseStyle: lot.exercise_style, multiplier }
       : undefined;
     const futureContract = lot.asset_class === "future" ? findFuture(lot.symbol) : undefined;
     const forwardContract = lot.asset_class === "forward" && lot.expiration_at && lot.strike && lot.underlying_instrument_id
@@ -842,8 +842,8 @@ export async function placeOptionStrategy(input: { portfolioId: string; units: n
   const statements = [];
   for (const leg of preview.legs) {
     const instrumentId = `option:${leg.symbol}`;
-    statements.push(db.prepare(`INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, underlying_instrument_id, expiration_at, strike, option_right, exercise_style, settlement_type)
-      VALUES (?, ?, ?, 'option', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    statements.push(db.prepare(`INSERT INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, underlying_instrument_id, expiration_at, strike, option_right, exercise_style, settlement_type)
+      VALUES (?, ?, ?, 'option', ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET multiplier = excluded.multiplier, exchange = excluded.exchange, calendar_id = excluded.calendar_id, settlement_type = excluded.settlement_type`)
       .bind(instrumentId, leg.symbol, `${preview.underlying} ${leg.contract.expiration} ${leg.contract.strike} ${leg.contract.right.toUpperCase()} · ${leg.contract.exerciseStyle}`, cryptoOption ? "CRYPTO" : "US", cryptoOption ? "24/7" : "XNYS", optionContractMultiplier.toString(), `${cryptoOption ? "crypto" : "equity"}:${preview.underlying}`, `${leg.contract.expiration}${cryptoOption ? "T08:00:00.000Z" : "T20:00:00.000Z"}`, leg.contract.strike.toString(), leg.contract.right, leg.contract.exerciseStyle, cryptoOption ? "cash" : "physical"));
   }
   const first = preview.legs[0];
@@ -988,8 +988,8 @@ export async function placeOrder(input: { portfolioId: string; symbol: string; a
   }
   if (input.assetClass === "option" && input.optionContract) {
     const optionAssetClass = optionUnderlyingAssetClass(input.optionContract), expirationAt = `${input.optionContract.expiration}${optionAssetClass === "crypto" ? "T08:00:00.000Z" : "T20:00:00.000Z"}`;
-    statements[0] = db.prepare(`INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, underlying_instrument_id, expiration_at, strike, option_right, exercise_style, settlement_type)
-      VALUES (?, ?, ?, 'option', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    statements[0] = db.prepare(`INSERT INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, underlying_instrument_id, expiration_at, strike, option_right, exercise_style, settlement_type)
+      VALUES (?, ?, ?, 'option', ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET multiplier = excluded.multiplier, exchange = excluded.exchange, calendar_id = excluded.calendar_id, settlement_type = excluded.settlement_type`)
       .bind(instrumentId, symbol, quote.name, optionAssetClass === "crypto" ? "CRYPTO" : "US", optionAssetClass === "crypto" ? "24/7" : "XNYS", multiplier.toString(), `${optionAssetClass}:${input.optionContract.underlying.toUpperCase()}`, expirationAt, input.optionContract.strike.toString(), input.optionContract.right, input.optionContract.exerciseStyle, optionAssetClass === "crypto" ? "cash" : "physical");
   }
   if (input.assetClass === "future" && input.futureContract) statements[0] = db.prepare(`INSERT OR IGNORE INTO instruments (id, symbol, display_name, asset_class, exchange, calendar_id, multiplier, expiration_at, first_notice_at, settlement_type)
