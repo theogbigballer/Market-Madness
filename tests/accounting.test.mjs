@@ -47,3 +47,14 @@ test("portfolio option margin recognizes covered calls, verticals, and iron-cond
   ], {});
   assert.equal(condor.requirement, 1000);
 });
+
+test("crypto option margin uses its one-unit contract multiplier", () => {
+  const covered = calculatePortfolioOptionMargin([{ underlying: "BTC-USD", expiration: "2026-12-18", right: "call", strike: 90_000, quantity: -1, spot: 86_000, mark: 2_000, multiplier: 1 }], { "BTC-USD": 1 });
+  assert.equal(covered.requirement, 0);
+  assert.equal(covered.coveredContracts, 1);
+  const vertical = calculatePortfolioOptionMargin([
+    { underlying: "BTC-USD", expiration: "2026-12-18", right: "call", strike: 90_000, quantity: -1, spot: 86_000, mark: 2_000, multiplier: 1 },
+    { underlying: "BTC-USD", expiration: "2026-12-18", right: "call", strike: 95_000, quantity: 1, spot: 86_000, mark: 800, multiplier: 1 },
+  ], {});
+  assert.equal(vertical.requirement, 5_000);
+});

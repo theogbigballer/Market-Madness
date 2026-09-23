@@ -82,10 +82,21 @@ async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   });
   if (!response.ok) throw new Error(`Alpaca returned ${response.status}.`);
   const payload = await response.json() as { quote?: { bp?: number; ap?: number; t?: string } };
-  const item = catalog[symbol] || { name: symbol, averageDailyVolume: 2_000_000 }, bid = payload.quote?.bp, ask = payload.quote?.ap;
-  if (!bid || !ask) throw new Error("Alpaca did not return a two-sided quote.");
+  const item = catalog[symbol] || { name: symbol, spread: 0.05, averageDailyVolume: 2_000_000 };
+  let bid = payload.quote?.bp, ask = payload.quote?.ap, observedAt = payload.quote?.t || new Date().toISOString(), provider = "Alpaca IEX";
+  if (!bid || !ask) {
+    const tradeResponse = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`, {
+      headers: { "APCA-API-KEY-ID": runtime.ALPACA_API_KEY_ID, "APCA-API-SECRET-KEY": runtime.ALPACA_API_SECRET_KEY }, signal: AbortSignal.timeout(4_000),
+    });
+    if (!tradeResponse.ok) throw new Error(`Alpaca latest trade returned ${tradeResponse.status}.`);
+    const tradePayload = await tradeResponse.json() as { trade?: { p?: number; t?: string } };
+    const trade = tradePayload.trade?.p;
+    if (!trade) throw new Error("Alpaca did not return a usable quote or trade.");
+    const spread = Math.max(item.spread, trade * 0.0001);
+    bid = trade - spread / 2; ask = trade + spread / 2; observedAt = tradePayload.trade?.t || observedAt; provider = "Alpaca IEX · latest trade reference";
+  }
   const mark = (bid + ask) / 2;
-  const quote = { instrumentId: `equity:${symbol}`, provider: "Alpaca IEX", quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt: payload.quote?.t || new Date().toISOString(), name: item.name, averageDailyVolume: item.averageDailyVolume } satisfies ExtendedQuote;
+  const quote = { instrumentId: `equity:${symbol}`, provider, quality: "live", bid: bid.toFixed(2), ask: ask.toFixed(2), last: mark.toFixed(2), mark: mark.toFixed(2), observedAt, name: item.name, averageDailyVolume: item.averageDailyVolume } satisfies ExtendedQuote;
   success("alpaca");
   return { ...quote, quality: classifyEquityQuoteQuality(quote.observedAt, getUsEquitySession().isOpen) };
 }
