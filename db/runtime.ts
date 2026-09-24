@@ -107,6 +107,11 @@ const schemaStatements = [
     source TEXT NOT NULL DEFAULT 'manual_simulation', notes TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (instrument_id) REFERENCES instruments(id)
   )`,
+  `CREATE TABLE IF NOT EXISTS market_data_credentials (
+    session_hash TEXT NOT NULL, provider TEXT NOT NULL, encrypted_credentials TEXT NOT NULL, iv TEXT NOT NULL,
+    key_id_masked TEXT NOT NULL, connected_at TEXT NOT NULL, validated_at TEXT NOT NULL,
+    PRIMARY KEY (session_hash, provider)
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,

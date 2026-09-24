@@ -4,6 +4,7 @@ import { env } from "cloudflare:workers";
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
 import { getUsEquitySession } from "./exchange-calendar";
 import { deribitDiagnostics } from "./deribit";
+import { currentAlpacaCredentials } from "./credentials";
 
 const catalog: Record<string, { name: string; base: number; spread: number; averageDailyVolume: number }> = {
   AAPL: { name: "Apple Inc.", base: 238.12, spread: 0.04, averageDailyVolume: 52_000_000 },
@@ -68,8 +69,9 @@ function failure(provider: "alpaca" | "coinbase", error: unknown) { const curren
 
 export function marketDataDiagnostics() {
   const runtime = env as unknown as { ALPACA_API_KEY_ID?: string; ALPACA_API_SECRET_KEY?: string };
+  const personal = currentAlpacaCredentials();
   return [
-    { id: "alpaca", name: "Alpaca IEX", assetClasses: ["US equities"], mode: runtime.ALPACA_API_KEY_ID && runtime.ALPACA_API_SECRET_KEY ? "configured" : "not configured", priority: 1, ...providerState.alpaca },
+    { id: "alpaca", name: "Alpaca IEX", assetClasses: ["US equities"], mode: personal ? "personal account connected" : runtime.ALPACA_API_KEY_ID && runtime.ALPACA_API_SECRET_KEY ? "configured locally" : "not configured", priority: 1, ...providerState.alpaca },
     { id: "coinbase", name: "Coinbase Exchange", assetClasses: ["Crypto / USD"], mode: "public API", priority: 1, ...providerState.coinbase },
     deribitDiagnostics(),
     { id: "simulation", name: "Market Madness fallback", assetClasses: ["Equities", "Crypto", "Derivatives"], mode: "always available", priority: 2, lastSuccess: new Date().toISOString(), lastFailure: null, consecutiveFailures: 0, lastError: null },
@@ -78,9 +80,11 @@ export function marketDataDiagnostics() {
 
 async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   const runtime = env as unknown as { ALPACA_API_KEY_ID?: string; ALPACA_API_SECRET_KEY?: string };
-  if (!runtime.ALPACA_API_KEY_ID || !runtime.ALPACA_API_SECRET_KEY) return null;
+  const personal = currentAlpacaCredentials();
+  const keyId = personal?.keyId || runtime.ALPACA_API_KEY_ID, secretKey = personal?.secretKey || runtime.ALPACA_API_SECRET_KEY;
+  if (!keyId || !secretKey) return null;
   const response = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(symbol)}/quotes/latest?feed=iex`, {
-    headers: { "APCA-API-KEY-ID": runtime.ALPACA_API_KEY_ID, "APCA-API-SECRET-KEY": runtime.ALPACA_API_SECRET_KEY },
+    headers: { "APCA-API-KEY-ID": keyId, "APCA-API-SECRET-KEY": secretKey },
     signal: AbortSignal.timeout(4_000),
   });
   if (!response.ok) throw new Error(`Alpaca returned ${response.status}.`);
@@ -89,7 +93,7 @@ async function alpacaQuote(symbol: string): Promise<ExtendedQuote | null> {
   let bid = payload.quote?.bp, ask = payload.quote?.ap, observedAt = payload.quote?.t || new Date().toISOString(), provider = "Alpaca IEX";
   if (!bid || !ask) {
     const tradeResponse = await fetch(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`, {
-      headers: { "APCA-API-KEY-ID": runtime.ALPACA_API_KEY_ID, "APCA-API-SECRET-KEY": runtime.ALPACA_API_SECRET_KEY }, signal: AbortSignal.timeout(4_000),
+      headers: { "APCA-API-KEY-ID": keyId, "APCA-API-SECRET-KEY": secretKey }, signal: AbortSignal.timeout(4_000),
     });
     if (!tradeResponse.ok) throw new Error(`Alpaca latest trade returned ${tradeResponse.status}.`);
     const tradePayload = await tradeResponse.json() as { trade?: { p?: number; t?: string } };

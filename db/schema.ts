@@ -16,6 +16,12 @@ export const portfolios = sqliteTable("portfolios", {
   lastProcessedAt: text("last_processed_at").notNull().default(sql`CURRENT_TIMESTAMP`), ...timestamps,
 });
 
+export const marketDataCredentials = sqliteTable("market_data_credentials", {
+  sessionHash: text("session_hash").notNull(), provider: text("provider").notNull(),
+  encryptedCredentials: text("encrypted_credentials").notNull(), iv: text("iv").notNull(),
+  keyIdMasked: text("key_id_masked").notNull(), connectedAt: text("connected_at").notNull(), validatedAt: text("validated_at").notNull(),
+}, (table) => [uniqueIndex("idx_market_data_credentials_session_provider").on(table.sessionHash, table.provider)]);
+
 export const allocations = sqliteTable("allocations", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
   bucket: text("bucket").notNull(), targetWeight: text("target_weight").notNull(),
