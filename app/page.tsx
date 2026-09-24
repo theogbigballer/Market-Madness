@@ -12,6 +12,7 @@ type Order = { id: string; symbol: string; asset_class: string; side: "buy" | "s
 type FutureContract = { root: string; symbol: string; name: string; expiration: string; firstNotice?: string; multiplier: number; initialMargin: number; maintenanceMargin: number; settlementType: "cash" | "physical"; quote: Quote };
 type WatchlistItem = { symbol: string; assetClass: "equity" | "crypto"; name: string; quote: Quote; change: number; changePercent: number; history: { value: number; quality: string; at: string }[] };
 type DataProvider = { id: string; name: string; assetClasses: string[]; mode: string; priority: number; lastSuccess: string | null; lastFailure: string | null; consecutiveFailures: number; lastError: string | null };
+type AlpacaConnection = { connected: boolean; provider: "alpaca"; maskedKeyId?: string; connectedAt?: string; validatedAt?: string };
 type OptionChainContract = { contract: { underlying: string; expiration: string; strike: number; right: "call" | "put"; exerciseStyle: "american" | "european"; multiplier?: number; venueInstrument?: string }; symbol: string; bid: number; ask: number; mark: number; quality: string; provider?: string; volume?: number; openInterest?: number; analytics: { spot: number; volatility: number; intrinsic: number; extrinsic: number; greeks: { delta: number; gamma: number; theta: number; vega: number } } };
 type Dashboard = {
   portfolio: Portfolio;
@@ -73,6 +74,14 @@ export default function Home() {
   const [tradeSeed, setTradeSeed] = useState<{ symbol: string; assetClass: "equity" | "crypto" | "option" | "future" | "forward"; side?: "buy" | "sell"; quantity?: number; orderType?: "market" | "limit" | "stop" | "stop_limit"; limitPrice?: number; stopPrice?: number; optionContract?: OptionChainContract["contract"] } | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [alpacaConnection, setAlpacaConnection] = useState<AlpacaConnection | null>(null);
+
+  const loadAlpacaConnection = useCallback(async () => {
+    const response = await fetch("/api/provider-credentials", { cache: "no-store" });
+    const payload = await response.json() as AlpacaConnection & { error?: string };
+    if (!response.ok) throw new Error(payload.error || "Unable to check Alpaca connection.");
+    setAlpacaConnection(payload);
+  }, []);
 
   const loadPortfolios = useCallback(async () => {
     const response = await fetch("/api/portfolios");
@@ -92,6 +101,7 @@ export default function Home() {
   }, [portfolioId]);
 
   useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; }, [dark]);
+  useEffect(() => { const timer = window.setTimeout(() => loadAlpacaConnection().catch(() => setAlpacaConnection({ connected: false, provider: "alpaca" })), 0); return () => window.clearTimeout(timer); }, [loadAlpacaConnection]);
   useEffect(() => { const timer = window.setTimeout(() => loadPortfolios().catch((reason) => setError(reason.message)).finally(() => setLoading(false)), 0); return () => window.clearTimeout(timer); }, [loadPortfolios]);
   useEffect(() => {
     const initial = window.setTimeout(() => refreshDashboard().catch((reason) => setError(reason.message)), 0);
@@ -141,6 +151,7 @@ export default function Home() {
               <optgroup label="System">{["Data providers", "Settings"].map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
             </select>
             <div className="market-clock"><span className={`status-dot ${dashboard?.session.isOpen ? "" : "closed"}`} /><span><strong>{dashboard?.session.isOpen ? "US markets open" : "US markets closed"}</strong><small>{dashboard?.session.isOpen ? `Closes ${new Date(dashboard.session.closesAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : dashboard ? `Next open ${new Date(dashboard.session.nextOpenAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "Checking calendar"}</small></span></div>
+            <button className={`data-connection-button ${alpacaConnection?.connected ? "connected" : ""}`} onClick={() => setActive("Data providers")}><span className={`status-dot ${alpacaConnection?.connected ? "" : "simulated"}`} />{alpacaConnection?.connected ? "Alpaca connected" : "Connect Alpaca"}</button>
             <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "◐"}</button>
             <button className="trade-button" disabled={!portfolioId} onClick={() => { setTradeSeed(null); setTradeOpen(true); }}>Place trade</button>
           </div>
@@ -165,7 +176,7 @@ export default function Home() {
           {dashboard && active === "Activity" && <ActivityPanel dashboard={dashboard} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Allocation" && <AllocationPanel key={dashboard.portfolio.id} dashboard={dashboard} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Corporate actions" && <CorporateActionsPanel actions={dashboard.corporateActions} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
-          {dashboard && active === "Data providers" && <DataProvidersPanel onError={setError} />}
+          {dashboard && active === "Data providers" && <DataProvidersPanel connection={alpacaConnection} onConnectionChange={async (status, message) => { setAlpacaConnection(status); setNotice(message); await refreshDashboard(); }} onError={setError} />}
           {dashboard && active === "Settings" && <SettingsPanel key={dashboard.portfolio.id} dashboard={dashboard} onRefresh={async () => { await loadPortfolios(); await refreshDashboard(); }} onPortfolioRemoved={async () => { setPortfolioId(""); setDashboard(null); await loadPortfolios(); }} onImported={async (id) => { await loadPortfolios(); setPortfolioId(id); setActive("Overview"); }} onNotice={setNotice} onError={setError} />}
           {dashboard && !["Overview", "Strategies", "Options chain", "Positions", "Orders", "Markets", "Trade", "P&L", "Blotter", "Risk", "Activity", "Allocation", "Corporate actions", "Data providers", "Settings"].includes(active) && <ModulePanel title={active} />}
         </div>
@@ -364,11 +375,32 @@ function MarketsPanel({ portfolioId, onTrade, onError }: { portfolioId: string; 
   </div>;
 }
 
-function DataProvidersPanel({ onError }: { onError: (message: string) => void }) {
+function DataProvidersPanel({ connection, onConnectionChange, onError }: { connection: AlpacaConnection | null; onConnectionChange: (status: AlpacaConnection, message: string) => Promise<void>; onError: (message: string) => void }) {
   const [providers, setProviders] = useState<DataProvider[]>([]), [policy, setPolicy] = useState<{ refreshSeconds: number; cachedLiveQuoteSeconds: number; equityExtendedHours: boolean; fallback: string } | null>(null), [checkedAt, setCheckedAt] = useState(""), [loading, setLoading] = useState(true);
+  const [keyId, setKeyId] = useState(""), [secretKey, setSecretKey] = useState(""), [connecting, setConnecting] = useState(false), [showSecret, setShowSecret] = useState(false);
   const load = useCallback(async () => { const response = await fetch("/api/providers"), payload = await response.json() as { providers?: DataProvider[]; policy?: typeof policy; checkedAt?: string; error?: string }; if (!response.ok) throw new Error(payload.error || "Unable to load provider status."); setProviders(payload.providers || []); setPolicy(payload.policy || null); setCheckedAt(payload.checkedAt || ""); setLoading(false); }, []);
   useEffect(() => { const timer = window.setTimeout(() => load().catch((reason) => { setLoading(false); onError(reason.message); }), 0); return () => window.clearTimeout(timer); }, [load, onError]);
-  return <section className="provider-layout"><article className="panel provider-overview"><div className="panel-head"><div><span className="panel-title">Market-data routing</span><p>Free providers first, cached live marks second, transparent simulation last</p></div><button className="secondary-button" onClick={() => { setLoading(true); load().catch((reason) => onError(reason.message)); }}>{loading ? "Checking…" : "Refresh status"}</button></div><div className="routing-flow"><div><strong>1</strong><span>Live provider<small>Use the best configured free source for each asset class.</small></span></div><i>→</i><div><strong>2</strong><span>Cached live quote<small>Retain the last successful mark for up to five minutes.</small></span></div><i>→</i><div><strong>3</strong><span>Simulation fallback<small>Never hide fallback quality or source from the trader.</small></span></div></div><div className="provider-policy"><span><small>Refresh cadence</small><strong>{policy?.refreshSeconds || 30} seconds</strong></span><span><small>Cached-live window</small><strong>{policy ? policy.cachedLiveQuoteSeconds / 60 : 5} minutes</strong></span><span><small>Equity extended hours</small><strong>{policy?.equityExtendedHours ? "Enabled" : "Disabled"}</strong></span><span><small>Last status check</small><strong>{checkedAt ? new Date(checkedAt).toLocaleTimeString() : "—"}</strong></span></div></article><div className="provider-grid">{providers.map((provider) => { const healthy = provider.mode !== "not configured" && provider.consecutiveFailures === 0; return <article className="panel provider-card" key={provider.id}><div><span className={`provider-state ${healthy ? "ready" : provider.mode === "not configured" ? "fallback" : "degraded"}`}/><span><strong>{provider.name}</strong><small>Priority {provider.priority} · {provider.mode}</small></span></div><p>{provider.assetClasses.join(" · ")}</p><dl><div><dt>Last success</dt><dd>{provider.lastSuccess ? new Date(provider.lastSuccess).toLocaleString() : "Awaiting request"}</dd></div><div><dt>Failures</dt><dd>{provider.consecutiveFailures}</dd></div></dl>{provider.lastError && <small className="provider-error">{provider.lastError}</small>}</article>; })}</div><article className="panel provider-note"><strong>Quote quality travels with every mark.</strong><span>Live, stale, indicative, and simulated data remain visibly labeled throughout orders, positions, options analytics, alerts, and P&amp;L.</span></article></section>;
+  async function connect() {
+    setConnecting(true);
+    try {
+      const response = await fetch("/api/provider-credentials", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ keyId, secretKey }) });
+      const payload = await response.json() as AlpacaConnection & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Unable to connect Alpaca.");
+      setKeyId(""); setSecretKey(""); await onConnectionChange(payload, "Alpaca connected. Equity quotes now use your personal free IEX feed."); await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : "Unable to connect Alpaca."); }
+    finally { setConnecting(false); }
+  }
+  async function disconnect() {
+    setConnecting(true);
+    try {
+      const response = await fetch("/api/provider-credentials", { method: "DELETE" });
+      const payload = await response.json() as AlpacaConnection & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Unable to disconnect Alpaca.");
+      await onConnectionChange(payload, "Alpaca disconnected. Equity prices will use the clearly labeled demonstration feed."); await load();
+    } catch (reason) { onError(reason instanceof Error ? reason.message : "Unable to disconnect Alpaca."); }
+    finally { setConnecting(false); }
+  }
+  return <section className="provider-layout"><article className={`panel alpaca-connect-card ${connection?.connected ? "is-connected" : ""}`}><div className="alpaca-connect-copy"><span className={`provider-state ${connection?.connected ? "ready" : "fallback"}`}/><div><span className="panel-title">{connection?.connected ? "Your Alpaca market data is connected" : "Connect your free Alpaca paper account"}</span><p>{connection?.connected ? `Using personal key ${connection.maskedKeyId || "••••••••"}. Market Madness can request IEX quotes but never places trades in your Alpaca account.` : "Bring your own free key so live US equity quotes are licensed to you. No funded brokerage account is required."}</p>{connection?.connected && connection.validatedAt && <small>Validated {new Date(connection.validatedAt).toLocaleString()}</small>}</div></div>{connection?.connected ? <button className="secondary-button disconnect-provider" disabled={connecting} onClick={disconnect}>{connecting ? "Disconnecting…" : "Disconnect"}</button> : <div className="alpaca-connect-form"><label>Paper API key ID<input value={keyId} onChange={(event) => setKeyId(event.target.value)} autoComplete="off" spellCheck={false} placeholder="PK…"/></label><label>Paper API secret<div className="secret-input"><input type={showSecret ? "text" : "password"} value={secretKey} onChange={(event) => setSecretKey(event.target.value)} autoComplete="new-password" spellCheck={false} placeholder="Paste once"/><button type="button" onClick={() => setShowSecret((value) => !value)}>{showSecret ? "Hide" : "Show"}</button></div></label><button className="trade-button" disabled={connecting || !keyId.trim() || !secretKey.trim()} onClick={connect}>{connecting ? "Validating…" : "Validate & connect"}</button><a href="https://app.alpaca.markets/account/login" target="_blank" rel="noreferrer">Create or open free Alpaca paper account ↗</a><small>Your key is validated directly with Alpaca, encrypted before storage, and tied to this browser using an HTTP-only secure session.</small></div>}</article><article className="panel provider-overview"><div className="panel-head"><div><span className="panel-title">Market-data routing</span><p>Free providers first, cached live marks second, transparent simulation last</p></div><button className="secondary-button" onClick={() => { setLoading(true); load().catch((reason) => onError(reason.message)); }}>{loading ? "Checking…" : "Refresh status"}</button></div><div className="routing-flow"><div><strong>1</strong><span>Live provider<small>Use the best configured free source for each asset class.</small></span></div><i>→</i><div><strong>2</strong><span>Cached live quote<small>Retain the last successful mark for up to five minutes.</small></span></div><i>→</i><div><strong>3</strong><span>Simulation fallback<small>Never hide fallback quality or source from the trader.</small></span></div></div><div className="provider-policy"><span><small>Refresh cadence</small><strong>{policy?.refreshSeconds || 30} seconds</strong></span><span><small>Cached-live window</small><strong>{policy ? policy.cachedLiveQuoteSeconds / 60 : 5} minutes</strong></span><span><small>Equity extended hours</small><strong>{policy?.equityExtendedHours ? "Enabled" : "Disabled"}</strong></span><span><small>Last status check</small><strong>{checkedAt ? new Date(checkedAt).toLocaleTimeString() : "—"}</strong></span></div></article><div className="provider-grid">{providers.map((provider) => { const healthy = provider.mode !== "not configured" && provider.consecutiveFailures === 0; return <article className="panel provider-card" key={provider.id}><div><span className={`provider-state ${healthy ? "ready" : provider.mode === "not configured" ? "fallback" : "degraded"}`}/><span><strong>{provider.name}</strong><small>Priority {provider.priority} · {provider.mode}</small></span></div><p>{provider.assetClasses.join(" · ")}</p><dl><div><dt>Last success</dt><dd>{provider.lastSuccess ? new Date(provider.lastSuccess).toLocaleString() : "Awaiting request"}</dd></div><div><dt>Failures</dt><dd>{provider.consecutiveFailures}</dd></div></dl>{provider.lastError && <small className="provider-error">{provider.lastError}</small>}</article>; })}</div><article className="panel provider-note"><strong>Quote quality travels with every mark.</strong><span>Live, stale, indicative, and simulated data remain visibly labeled throughout orders, positions, options analytics, alerts, and P&amp;L.</span></article></section>;
 }
 
 function ModulePanel({ title }: { title: string }) {

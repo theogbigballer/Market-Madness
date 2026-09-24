@@ -64,6 +64,13 @@
       "when": 1789575764976,
       "tag": "0008_square_supreme_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790219142374,
+      "tag": "0009_mixed_stick",
+      "breakpoints": true
     }
   ]
 }
