@@ -13,6 +13,8 @@ import { evaluateAlertRules, listAlertRules } from "./alert-rules";
 import { buildFillAudit, orderIsMarketable } from "./execution";
 import { derivativeSettlementAmount, planOptionExpiry, requiresMarginLiquidation } from "./lifecycle";
 import { formatMoney, multiplyMoney, sumMoney } from "./money";
+import { currentUser } from "../auth/identity";
+import { assertPortfolioAccess } from "../auth/ownership";
 
 type PortfolioRow = { id: string; name: string; starting_capital: string; benchmark_symbol: string | null; advanced_derivatives_enabled: number; theme: string; created_at: string };
 type LotRow = { id: string; instrument_id: string; opening_fill_id: string; remaining_quantity: string; cost_basis: string; opened_at: string; symbol: string; display_name: string; asset_class: AssetClass; multiplier: string; underlying_instrument_id: string | null; expiration_at: string | null; first_notice_at: string | null; strike: string | null; option_right: "call" | "put" | null; exercise_style: "american" | "european" | null; settlement_type: "cash" | "physical" | null };
@@ -25,7 +27,7 @@ function recordFill(db: ReturnType<typeof getD1>, input: { id: string; orderId: 
 
 export async function listPortfolios() {
   await ensureCoreSchema();
-  const rows = await getD1().prepare("SELECT id, name, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, created_at FROM portfolios WHERE status = 'active' ORDER BY created_at").all<PortfolioRow>();
+  const rows = await getD1().prepare("SELECT id, name, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, created_at FROM portfolios WHERE owner_user_id = ? AND status = 'active' ORDER BY created_at").bind(currentUser().id).all<PortfolioRow>();
   return rows.results.map((row) => ({ id: row.id, name: row.name, startingCapital: Number(row.starting_capital), advancedDerivativesEnabled: Boolean(row.advanced_derivatives_enabled), theme: row.theme }));
 }
 
@@ -39,8 +41,8 @@ export async function createPortfolio(input: { name: string; startingCapital: nu
   const id = crypto.randomUUID(), ledgerId = crypto.randomUUID(), now = new Date().toISOString();
   const db = getD1();
   await db.batch([
-    db.prepare("INSERT INTO portfolios (id, name, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, last_processed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(id, input.name.trim(), formatMoney(input.startingCapital), null, input.advancedDerivativesEnabled ? 1 : 0, input.theme || "dark", now, now, now),
+    db.prepare("INSERT INTO portfolios (id, name, owner_user_id, starting_capital, benchmark_symbol, advanced_derivatives_enabled, theme, last_processed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(id, input.name.trim(), currentUser().id, formatMoney(input.startingCapital), null, input.advancedDerivativesEnabled ? 1 : 0, input.theme || "dark", now, now, now),
     db.prepare("INSERT INTO cash_ledger (id, portfolio_id, event_type, amount, description, effective_at, idempotency_key) VALUES (?, ?, 'initial_capital', ?, ?, ?, ?)")
       .bind(ledgerId, id, formatMoney(input.startingCapital), "Initial portfolio capital", now, `portfolio:${id}:initial-capital`),
   ]);
@@ -48,6 +50,7 @@ export async function createPortfolio(input: { name: string; startingCapital: nu
 }
 
 export async function getBenchmarks(portfolioId: string) {
+  await assertPortfolioAccess(portfolioId);
   await ensureCoreSchema();
   const result = await getD1().prepare("SELECT symbol FROM portfolio_benchmarks WHERE portfolio_id = ? ORDER BY created_at").bind(portfolioId).all<{ symbol: string }>();
   return Promise.all(result.results.map(async ({ symbol }) => ({ symbol, quote: await getMarketQuote(symbol, symbol.endsWith("-USD") ? "crypto" : "equity") })));
@@ -55,6 +58,7 @@ export async function getBenchmarks(portfolioId: string) {
 
 export async function setBenchmarks(portfolioId: string, symbolsInput: string[]) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const symbols = [...new Set(symbolsInput.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))].slice(0, 8);
   if (symbols.some((symbol) => !/^[A-Z0-9.^=-]{1,20}$/.test(symbol))) throw new Error("Benchmark tickers may contain only letters, numbers, dots, dashes, equals signs, or carets.");
   await Promise.all(symbols.map((symbol) => getMarketQuote(symbol, symbol.endsWith("-USD") ? "crypto" : "equity")));
@@ -67,6 +71,7 @@ export async function setBenchmarks(portfolioId: string, symbolsInput: string[])
 }
 
 export async function getAllocations(portfolioId: string) {
+  await assertPortfolioAccess(portfolioId);
   await ensureCoreSchema();
   const result = await getD1().prepare("SELECT bucket, target_weight, minimum_weight, maximum_weight FROM allocations WHERE portfolio_id = ? ORDER BY bucket").bind(portfolioId).all<{ bucket: string; target_weight: string; minimum_weight: string | null; maximum_weight: string | null }>();
   return result.results.map((item) => ({ bucket: item.bucket, targetWeight: Number(item.target_weight), minimumWeight: item.minimum_weight === null ? null : Number(item.minimum_weight), maximumWeight: item.maximum_weight === null ? null : Number(item.maximum_weight) }));
@@ -74,6 +79,7 @@ export async function getAllocations(portfolioId: string) {
 
 export async function setAllocations(portfolioId: string, targets: { bucket: string; targetWeight: number }[]) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const normalized = targets.map((item) => ({ bucket: item.bucket.toLowerCase(), targetWeight: Number(item.targetWeight) })).filter((item) => item.targetWeight > 0);
   const total = normalized.reduce((sum, item) => sum + item.targetWeight, 0);
   if (Math.abs(total - 1) > 0.001) throw new Error("Allocation targets must total 100%.");
@@ -102,7 +108,7 @@ export async function transferCash(portfolioId: string, direction: "deposit" | "
 
 export async function archivePortfolio(portfolioId: string) {
   await ensureCoreSchema();
-  const result = await getD1().prepare("UPDATE portfolios SET status = 'archived', updated_at = ? WHERE id = ? AND status = 'active'").bind(new Date().toISOString(), portfolioId).run();
+  const result = await getD1().prepare("UPDATE portfolios SET status = 'archived', updated_at = ? WHERE id = ? AND owner_user_id = ? AND status = 'active'").bind(new Date().toISOString(), portfolioId, currentUser().id).run();
   if (!result.meta.changes) throw new Error("Portfolio not found.");
   return { portfolioId, status: "archived" };
 }
@@ -110,7 +116,7 @@ export async function archivePortfolio(portfolioId: string) {
 export async function permanentlyDeletePortfolio(portfolioId: string) {
   await ensureCoreSchema();
   const db = getD1();
-  const existing = await db.prepare("SELECT id FROM portfolios WHERE id = ?").bind(portfolioId).first<{ id: string }>();
+  const existing = await db.prepare("SELECT id FROM portfolios WHERE id = ? AND owner_user_id = ?").bind(portfolioId, currentUser().id).first<{ id: string }>();
   if (!existing) throw new Error("Portfolio not found.");
   await db.batch([
     db.prepare("DELETE FROM alert_rules WHERE portfolio_id = ?").bind(portfolioId),
@@ -656,6 +662,7 @@ async function getReconciliationStatus(portfolioId: string) {
 
 export async function getDashboard(portfolioId: string, afterLiquidation = false): Promise<Record<string, unknown>> {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   await processAmericanEarlyAssignments(portfolioId);
   await processCorporateActions();
   await processDerivativeSettlements(portfolioId);
@@ -797,6 +804,7 @@ function toCsv(headers: string[], rows: unknown[][]) { return [headers, ...rows]
 
 export async function exportPortfolioCsv(portfolioId: string, report: "transactions" | "positions" | "pnl" | "closed-trades") {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const portfolio = await getD1().prepare("SELECT name FROM portfolios WHERE id = ? AND status = 'active'").bind(portfolioId).first<{ name: string }>();
   if (!portfolio) throw new Error("Portfolio not found.");
   if (report === "transactions") {

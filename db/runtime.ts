@@ -4,7 +4,7 @@ let ready: Promise<void> | undefined;
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS portfolios (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, base_currency TEXT NOT NULL DEFAULT 'USD',
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, owner_user_id TEXT NOT NULL DEFAULT 'local-user', base_currency TEXT NOT NULL DEFAULT 'USD',
     starting_capital TEXT NOT NULL, benchmark_symbol TEXT, advanced_derivatives_enabled INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active', theme TEXT NOT NULL DEFAULT 'dark', last_processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -112,6 +112,17 @@ const schemaStatements = [
     key_id_masked TEXT NOT NULL, connected_at TEXT NOT NULL, validated_at TEXT NOT NULL,
     PRIMARY KEY (session_hash, provider)
   )`,
+  `CREATE TABLE IF NOT EXISTS app_users (
+    id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 1,
+    is_admin INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, failed_attempts INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS app_sessions (
+    token_hash TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL, expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES app_users(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_app_sessions_user_expiry ON app_sessions(user_id, expires_at)`,
   `CREATE INDEX IF NOT EXISTS idx_orders_portfolio_status ON orders(portfolio_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_fills_portfolio_time ON fills(portfolio_id, executed_at)`,
   `CREATE INDEX IF NOT EXISTS idx_position_lots_portfolio_instrument ON position_lots(portfolio_id, instrument_id)`,
@@ -144,6 +155,9 @@ export async function ensureCoreSchema() {
     const db = getD1();
     ready = (async () => {
       await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+      const portfolioColumns = await db.prepare("PRAGMA table_info(portfolios)").all<{ name: string }>();
+      if (!portfolioColumns.results.some((column) => column.name === "owner_user_id")) await db.prepare("ALTER TABLE portfolios ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT 'local-user'").run();
+      await db.prepare("CREATE INDEX IF NOT EXISTS idx_portfolios_owner_status ON portfolios(owner_user_id, status)").run();
       const fillColumns = await db.prepare("PRAGMA table_info(fills)").all<{ name: string }>();
       const existing = new Set(fillColumns.results.map((column) => column.name));
       const additions = ["quote_provider TEXT", "quote_quality TEXT", "quote_observed_at TEXT", "quote_bid TEXT", "quote_ask TEXT", "reference_price TEXT", "execution_assumptions TEXT"];

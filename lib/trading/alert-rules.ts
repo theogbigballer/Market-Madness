@@ -1,16 +1,19 @@
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
 import { getMarketQuote } from "../market/quotes";
+import { assertPortfolioAccess } from "../auth/ownership";
 
 export type AlertRuleInput = { portfolioId: string; ruleType: "price" | "pnl"; symbol?: string; assetClass?: "equity" | "crypto"; comparator: "above" | "below"; threshold: number };
 
 export async function listAlertRules(portfolioId: string) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const result = await getD1().prepare("SELECT id, rule_type, symbol, asset_class, comparator, threshold, status, last_value, triggered_at, created_at FROM alert_rules WHERE portfolio_id = ? ORDER BY created_at DESC").bind(portfolioId).all<Record<string, string | null>>();
   return result.results.map((row) => ({ ...row, threshold: Number(row.threshold), last_value: row.last_value === null ? null : Number(row.last_value) }));
 }
 
 export async function createAlertRule(input: AlertRuleInput) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(input.portfolioId);
   if (!Number.isFinite(input.threshold)) throw new Error("Alert threshold must be a number.");
   const symbol = input.ruleType === "price" ? input.symbol?.trim().toUpperCase() : null;
   if (input.ruleType === "price" && !symbol) throw new Error("A ticker is required for a price alert.");
@@ -22,6 +25,7 @@ export async function createAlertRule(input: AlertRuleInput) {
 
 export async function deleteAlertRule(portfolioId: string, id: string) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const result = await getD1().prepare("DELETE FROM alert_rules WHERE portfolio_id = ? AND id = ?").bind(portfolioId, id).run();
   if (!result.meta.changes) throw new Error("Alert rule not found.");
   return { id };

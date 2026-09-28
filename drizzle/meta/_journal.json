@@ -71,6 +71,20 @@
       "when": 1790219142374,
       "tag": "0009_mixed_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790220400675,
+      "tag": "0010_peaceful_thundra",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1790609631435,
+      "tag": "0011_windy_mad_thinker",
+      "breakpoints": true
     }
   ]
 }

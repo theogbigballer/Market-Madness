@@ -1,5 +1,6 @@
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
 import { getMarketQuote } from "../market/quotes";
+import { assertPortfolioAccess } from "../auth/ownership";
 
 type WatchAssetClass = "equity" | "crypto";
 
@@ -20,6 +21,7 @@ function newYorkDayStart() {
 
 export async function addWatchlistItem(portfolioId: string, symbolInput: string, requestedAssetClass?: WatchAssetClass) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const symbol = normalizeSymbol(symbolInput), assetClass: WatchAssetClass = requestedAssetClass || (symbol.endsWith("-USD") ? "crypto" : "equity"), db = getD1();
   const portfolio = await db.prepare("SELECT id FROM portfolios WHERE id = ? AND status = 'active'").bind(portfolioId).first();
   if (!portfolio) throw new Error("Portfolio not found.");
@@ -32,6 +34,7 @@ export async function addWatchlistItem(portfolioId: string, symbolInput: string,
 
 export async function removeWatchlistItem(portfolioId: string, symbolInput: string) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const symbol = normalizeSymbol(symbolInput), db = getD1();
   await db.prepare("DELETE FROM watchlist_items WHERE portfolio_id = ? AND symbol = ?").bind(portfolioId, symbol).run();
   return { symbol };
@@ -39,6 +42,7 @@ export async function removeWatchlistItem(portfolioId: string, symbolInput: stri
 
 export async function getWatchlist(portfolioId: string) {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const db = getD1();
   let rows = await db.prepare("SELECT symbol, asset_class FROM watchlist_items WHERE portfolio_id = ? ORDER BY created_at").bind(portfolioId).all<{ symbol: string; asset_class: WatchAssetClass }>();
   if (!rows.results.length) {

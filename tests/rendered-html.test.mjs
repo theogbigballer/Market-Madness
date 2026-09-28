@@ -11,15 +11,14 @@ async function render() {
   }, { waitUntil() {}, passThroughOnException() {} });
 }
 
-test("server-renders the Market Madness dashboard", async () => {
+test("server-renders the Market Madness authentication shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /Market Madness/);
-  assert.match(html, /Portfolio overview/);
-  assert.match(html, /Opening your local portfolio ledger/);
-  assert.match(html, /Place trade/);
-  assert.match(html, /Data providers/);
+  assert.match(html, /Trade the market/);
+  assert.match(html, /Keep it simulated/);
+  assert.match(html, /Opening Market Madness/);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Building your site/);
 });

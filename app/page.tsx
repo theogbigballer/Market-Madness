@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import StrategyBuilder from "./components/StrategyBuilder";
 import CorporateActionsPanel, { type CorporateAction } from "./components/CorporateActionsPanel";
@@ -13,6 +13,7 @@ type FutureContract = { root: string; symbol: string; name: string; expiration: 
 type WatchlistItem = { symbol: string; assetClass: "equity" | "crypto"; name: string; quote: Quote; change: number; changePercent: number; history: { value: number; quality: string; at: string }[] };
 type DataProvider = { id: string; name: string; assetClasses: string[]; mode: string; priority: number; lastSuccess: string | null; lastFailure: string | null; consecutiveFailures: number; lastError: string | null };
 type AlpacaConnection = { connected: boolean; provider: "alpaca"; maskedKeyId?: string; connectedAt?: string; validatedAt?: string };
+type Session = { authenticated: boolean; id: string; email: string | null; username: string; displayName: string; isLocal: boolean; isAdmin: boolean; mustChangePassword: boolean };
 type OptionChainContract = { contract: { underlying: string; expiration: string; strike: number; right: "call" | "put"; exerciseStyle: "american" | "european"; multiplier?: number; venueInstrument?: string }; symbol: string; bid: number; ask: number; mark: number; quality: string; provider?: string; volume?: number; openInterest?: number; analytics: { spot: number; volatility: number; intrinsic: number; extrinsic: number; greeks: { delta: number; gamma: number; theta: number; vega: number } } };
 type Dashboard = {
   portfolio: Portfolio;
@@ -75,6 +76,8 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [alpacaConnection, setAlpacaConnection] = useState<AlpacaConnection | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
 
   const loadAlpacaConnection = useCallback(async () => {
     const response = await fetch("/api/provider-credentials", { cache: "no-store" });
@@ -101,8 +104,16 @@ export default function Home() {
   }, [portfolioId]);
 
   useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; }, [dark]);
-  useEffect(() => { const timer = window.setTimeout(() => loadAlpacaConnection().catch(() => setAlpacaConnection({ connected: false, provider: "alpaca" })), 0); return () => window.clearTimeout(timer); }, [loadAlpacaConnection]);
-  useEffect(() => { const timer = window.setTimeout(() => loadPortfolios().catch((reason) => setError(reason.message)).finally(() => setLoading(false)), 0); return () => window.clearTimeout(timer); }, [loadPortfolios]);
+  useEffect(() => { const timer = window.setTimeout(() => fetch("/api/session", { cache: "no-store" }).then(async (response) => { const payload = await response.json() as Session & { error?: string }; if (response.status === 401) { setSession(null); return; } if (!response.ok) throw new Error(payload.error || "Unable to load session."); setSession(payload); }).catch((reason) => setError(reason.message)).finally(() => setSessionLoading(false)), 0); return () => window.clearTimeout(timer); }, []);
+  useEffect(() => {
+    if (!session?.authenticated || session.mustChangePassword) return;
+    const refresh = () => loadAlpacaConnection().catch(() => setAlpacaConnection({ connected: false, provider: "alpaca" }));
+    const timer = window.setTimeout(refresh, 0), interval = window.setInterval(refresh, 30_000);
+    const onFocus = () => refresh(), onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus); document.addEventListener("visibilitychange", onVisibility);
+    return () => { window.clearTimeout(timer); window.clearInterval(interval); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [loadAlpacaConnection, session]);
+  useEffect(() => { if (!session?.authenticated || session.mustChangePassword) return; const timer = window.setTimeout(() => loadPortfolios().catch((reason) => setError(reason.message)).finally(() => setLoading(false)), 0); return () => window.clearTimeout(timer); }, [loadPortfolios, session]);
   useEffect(() => {
     const initial = window.setTimeout(() => refreshDashboard().catch((reason) => setError(reason.message)), 0);
     const interval = window.setInterval(() => refreshDashboard().catch(() => undefined), 30_000);
@@ -124,6 +135,15 @@ export default function Home() {
 
   const selectedPortfolio = portfolios.find((portfolio) => portfolio.id === portfolioId);
 
+  async function signOut() {
+    if (session?.email && !session.isLocal) { window.location.href = "/signout-with-chatgpt?return_to=/"; return; }
+    await fetch("/api/auth/logout", { method: "POST" }); setSession(null); setPortfolios([]); setPortfolioId(""); setDashboard(null); setLoading(true);
+  }
+
+  if (sessionLoading) return <AuthShell><div className="auth-loading">Opening Market Madness…</div></AuthShell>;
+  if (!session) return <LoginScreen onAuthenticated={(user) => { setSession(user); setLoading(true); }} />;
+  if (session.mustChangePassword) return <PasswordChangeScreen session={session} onChanged={() => setSession({ ...session, mustChangePassword: false })} onSignOut={signOut} />;
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -136,7 +156,7 @@ export default function Home() {
             <div className="advanced-nav-items">{advancedNavigation.map((item) => <button key={item} aria-current={active === item ? "page" : undefined} className={active === item ? "nav-item active" : "nav-item"} onClick={() => setActive(item)}><span className="nav-dot" />{item}</button>)}</div>
           </details>
           <p className="nav-label secondary-label">System</p>
-          <button className={active === "Data providers" ? "nav-item active" : "nav-item"} onClick={() => setActive("Data providers")}><span className="nav-dot" />Data providers</button><button className={active === "Settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("Settings")}><span className="nav-dot" />Settings</button>
+          <button className={active === "Data providers" ? "nav-item active" : "nav-item"} onClick={() => setActive("Data providers")}><span className="nav-dot" />Data providers</button><button className={active === "Settings" ? "nav-item active" : "nav-item"} onClick={() => setActive("Settings")}><span className="nav-dot" />Settings</button>{session.isAdmin && <button className={active === "Users" ? "nav-item active" : "nav-item"} onClick={() => setActive("Users")}><span className="nav-dot" />Users</button>}
         </nav>
         <div className="feed-card"><div><span className="status-dot simulated" /> Market data</div><strong>{dashboard ? quoteQualityLabel(dashboard.quoteStatus.quality) : "Starting"}</strong><span>{dashboard ? `Updated ${new Date(dashboard.quoteStatus.refreshedAt).toLocaleTimeString()}` : "Waiting for portfolio"}</span></div>
       </aside>
@@ -148,10 +168,11 @@ export default function Home() {
             <select className="mobile-navigation" aria-label="Open workspace" value={active} onChange={(event) => { const destination = event.target.value; setActive(destination); if (advancedNavigation.includes(destination)) setAdvancedOpen(true); if (destination === "Trade") setTradeOpen(true); }}>
               <optgroup label="Workspace">{navigation.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
               <optgroup label="Advanced settings">{advancedNavigation.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
-              <optgroup label="System">{["Data providers", "Settings"].map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
+              <optgroup label="System">{["Data providers", "Settings", ...(session.isAdmin ? ["Users"] : [])].map((item) => <option key={item} value={item}>{item}</option>)}</optgroup>
             </select>
             <div className="market-clock"><span className={`status-dot ${dashboard?.session.isOpen ? "" : "closed"}`} /><span><strong>{dashboard?.session.isOpen ? "US markets open" : "US markets closed"}</strong><small>{dashboard?.session.isOpen ? `Closes ${new Date(dashboard.session.closesAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : dashboard ? `Next open ${new Date(dashboard.session.nextOpenAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "Checking calendar"}</small></span></div>
-            <button className={`data-connection-button ${alpacaConnection?.connected ? "connected" : ""}`} onClick={() => setActive("Data providers")}><span className={`status-dot ${alpacaConnection?.connected ? "" : "simulated"}`} />{alpacaConnection?.connected ? "Alpaca connected" : "Connect Alpaca"}</button>
+            <button className={`data-connection-button ${alpacaConnection?.connected ? "connected" : alpacaConnection === null ? "checking" : ""}`} onClick={() => setActive("Data providers")} aria-live="polite"><span className={`status-dot ${alpacaConnection?.connected ? "" : alpacaConnection === null ? "checking" : "simulated"}`} /><span><strong>{alpacaConnection?.connected ? "Alpaca connected" : alpacaConnection === null ? "Checking Alpaca…" : "Connect Alpaca"}</strong>{alpacaConnection?.connected && <small>Personal IEX feed active</small>}</span></button>
+            {!session.isLocal && <button className="user-session" onClick={signOut} title="Sign out"><span>{session.displayName}</span><small>@{session.username} · Sign out</small></button>}
             <button className="theme-toggle" onClick={() => setDark((value) => !value)} aria-label="Toggle color theme">{dark ? "☼" : "◐"}</button>
             <button className="trade-button" disabled={!portfolioId} onClick={() => { setTradeSeed(null); setTradeOpen(true); }}>Place trade</button>
           </div>
@@ -162,7 +183,7 @@ export default function Home() {
           {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
           <div className="page-heading"><div><p className="eyebrow">{new Date().toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" })}</p><h1>{active === "Overview" ? "Portfolio overview" : active}</h1></div></div>
 
-          {loading && <section className="empty-panel">Opening your local portfolio ledger…</section>}
+          {loading && <section className="empty-panel">Opening your private portfolio ledger…</section>}
           {!loading && !portfolioId && <section className="empty-panel"><strong>Create your first portfolio</strong><p>Choose your starting capital to begin trading current markets.</p><button className="trade-button" onClick={() => setCreateOpen(true)}>Create portfolio</button></section>}
           {dashboard && active === "Overview" && <Overview dashboard={dashboard} allocation={allocation} onNavigate={setActive} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Positions" && <PositionsTable positions={dashboard.positions} expanded portfolioId={dashboard.portfolio.id} sessionOpen={dashboard.session.isOpen} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
@@ -178,6 +199,7 @@ export default function Home() {
           {dashboard && active === "Corporate actions" && <CorporateActionsPanel actions={dashboard.corporateActions} onRefresh={refreshDashboard} onNotice={setNotice} onError={setError} />}
           {dashboard && active === "Data providers" && <DataProvidersPanel connection={alpacaConnection} onConnectionChange={async (status, message) => { setAlpacaConnection(status); setNotice(message); await refreshDashboard(); }} onError={setError} />}
           {dashboard && active === "Settings" && <SettingsPanel key={dashboard.portfolio.id} dashboard={dashboard} onRefresh={async () => { await loadPortfolios(); await refreshDashboard(); }} onPortfolioRemoved={async () => { setPortfolioId(""); setDashboard(null); await loadPortfolios(); }} onImported={async (id) => { await loadPortfolios(); setPortfolioId(id); setActive("Overview"); }} onNotice={setNotice} onError={setError} />}
+          {session.isAdmin && active === "Users" && <UserAdminPanel onNotice={setNotice} onError={setError} />}
           {dashboard && !["Overview", "Strategies", "Options chain", "Positions", "Orders", "Markets", "Trade", "P&L", "Blotter", "Risk", "Activity", "Allocation", "Corporate actions", "Data providers", "Settings"].includes(active) && <ModulePanel title={active} />}
         </div>
       </section>
@@ -188,6 +210,42 @@ export default function Home() {
   );
 }
 
+function AuthShell({ children }: { children: ReactNode }) {
+  return <main className="auth-shell"><section className="auth-brand"><span className="brand-mark auth-logo"><Image src="/market-madness-logo.png" width={82} height={82} alt="Market Madness" priority /></span><p className="eyebrow">Market Madness</p><h1>Trade the market.<br/>Keep it simulated.</h1><p>A realistic multi-asset portfolio simulator with live market references, risk controls, and a complete trading ledger.</p></section><section className="auth-card">{children}</section></main>;
+}
+
+function LoginScreen({ onAuthenticated }: { onAuthenticated: (session: Session) => void }) {
+  const [username, setUsername] = useState(""), [password, setPassword] = useState(""), [submitting, setSubmitting] = useState(false), [error, setError] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSubmitting(true); setError("");
+    const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username, password }) });
+    const payload = await response.json() as { user?: Session; error?: string }; setSubmitting(false);
+    if (!response.ok || !payload.user) return setError(payload.error || "Unable to sign in.");
+    onAuthenticated({ ...payload.user, authenticated: true });
+  }
+  return <AuthShell><form className="auth-form" onSubmit={submit}><div><p className="eyebrow">Welcome back</p><h2>Sign in to your portfolio</h2><p>Your account and trading history are private to you.</p></div>{error && <div className="auth-error">{error}</div>}<label>Username<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label><button className="trade-button" disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}</button><div className="owner-login"><span>Site owner?</span><a href="/signin-with-chatgpt?return_to=/">Sign in with ChatGPT</a></div></form></AuthShell>;
+}
+
+function PasswordChangeScreen({ session, onChanged, onSignOut }: { session: Session; onChanged: () => void; onSignOut: () => void }) {
+  const [password, setPassword] = useState(""), [confirm, setConfirm] = useState(""), [saving, setSaving] = useState(false), [error, setError] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (password !== confirm) return setError("Passwords do not match."); setSaving(true); setError("");
+    const response = await fetch("/api/auth/password", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) }); const payload = await response.json() as { error?: string }; setSaving(false);
+    if (!response.ok) return setError(payload.error || "Unable to change password."); onChanged();
+  }
+  return <AuthShell><form className="auth-form" onSubmit={submit}><div><p className="eyebrow">First sign-in</p><h2>Choose your password</h2><p>Hi {session.displayName}. Replace your temporary password before entering your portfolio.</p></div>{error && <div className="auth-error">{error}</div>}<label>New password<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label><label>Confirm password<input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} required /></label><small>Use at least 12 characters with uppercase, lowercase, and a number.</small><button className="trade-button" disabled={saving}>{saving ? "Securing account…" : "Save password"}</button><button type="button" className="auth-link-button" onClick={onSignOut}>Sign out</button></form></AuthShell>;
+}
+
+type ManagedUser = { id: string; username: string; displayName: string; mustChangePassword: boolean; active: boolean; createdAt: string };
+function UserAdminPanel({ onNotice, onError }: { onNotice: (message: string) => void; onError: (message: string) => void }) {
+  const [users, setUsers] = useState<ManagedUser[]>([]), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
+  const load = useCallback(async () => { const response = await fetch("/api/auth/users", { cache: "no-store" }), payload = await response.json() as { users?: ManagedUser[]; error?: string }; if (!response.ok) throw new Error(payload.error || "Unable to load users."); setUsers(payload.users || []); setLoading(false); }, []);
+  useEffect(() => { const timer = window.setTimeout(() => load().catch((reason) => onError(reason.message)), 0); return () => window.clearTimeout(timer); }, [load, onError]);
+  async function create(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaving(true); const form = new FormData(event.currentTarget), response = await fetch("/api/auth/users", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: form.get("username"), displayName: form.get("displayName"), temporaryPassword: form.get("temporaryPassword") }) }), payload = await response.json() as { error?: string }; setSaving(false); if (!response.ok) return onError(payload.error || "Unable to create user."); event.currentTarget.reset(); onNotice("User created. Share the username and temporary password directly with them."); await load(); }
+  async function reset(user: ManagedUser) { const password = window.prompt(`Enter a new temporary password for @${user.username}.`); if (!password) return; const response = await fetch("/api/auth/users", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: user.id, temporaryPassword: password }) }), payload = await response.json() as { error?: string }; if (!response.ok) return onError(payload.error || "Unable to reset password."); onNotice(`Temporary password reset for @${user.username}.`); await load(); }
+  async function deactivate(user: ManagedUser) { if (!window.confirm(`Deactivate @${user.username}? They will be signed out immediately.`)) return; const response = await fetch(`/api/auth/users?id=${encodeURIComponent(user.id)}`, { method: "DELETE" }), payload = await response.json() as { error?: string }; if (!response.ok) return onError(payload.error || "Unable to deactivate user."); onNotice(`@${user.username} was deactivated.`); await load(); }
+  return <div className="user-admin-grid"><section className="panel settings-card"><div className="panel-head"><div><span className="panel-title">Create user</span><p>Only approved usernames can enter Market Madness</p></div></div><form className="settings-form user-create-form" onSubmit={create}><label>Display name<input name="displayName" required placeholder="Daniel McKay" /></label><label>Username<input name="username" required placeholder="daniel" autoCapitalize="none" /></label><label>Temporary password<input name="temporaryPassword" type="password" required placeholder="12+ characters" /></label><button className="trade-button" disabled={saving}>{saving ? "Creating…" : "Create user"}</button></form><small>Share credentials yourself. The app does not send invitation emails.</small></section><section className="panel settings-card user-list-card"><div className="panel-head"><div><span className="panel-title">Approved users</span><p>Accounts have separate portfolios and sessions</p></div></div>{loading ? <p>Loading users…</p> : users.length ? <div className="managed-users">{users.map((user) => <div key={user.id}><span><strong>{user.displayName}</strong><small>@{user.username} · {user.active ? user.mustChangePassword ? "Temporary password" : "Active" : "Deactivated"}</small></span><span><button className="secondary-button" onClick={() => reset(user)}>Reset password</button>{user.active && <button className="delete-button" onClick={() => deactivate(user)}>Deactivate</button>}</span></div>)}</div> : <p>No credential users yet.</p>}</section></div>;
+}
 function Overview({ dashboard, allocation, onNavigate, onRefresh, onNotice, onError }: { dashboard: Dashboard; allocation: { label: string; value: number }[]; onNavigate: (destination: string) => void; onRefresh: () => Promise<void>; onNotice: (message: string) => void; onError: (message: string) => void }) {
   const { account } = dashboard;
   return <>

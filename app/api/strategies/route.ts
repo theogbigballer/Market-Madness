@@ -4,6 +4,7 @@ import { placeOptionStrategy } from "../../../lib/trading/store";
 import { enumValue, optionalPositiveNumber, portfolioId, positiveNumber } from "../../../lib/trading/validation";
 import { normalizeRequestId, withPortfolioMutation } from "../../../lib/trading/mutation";
 import { apiErrorResponse } from "../../../lib/http/api-error";
+import { assertPortfolioAccess } from "../../../lib/auth/ownership";
 
 export async function POST(request: Request) {
   try {
@@ -12,6 +13,7 @@ export async function POST(request: Request) {
     const units = positiveNumber(body.units ?? 1, "Strategy quantity", { integer: true, maximum: 100_000 });
     if (body.action === "submit") {
       const id = portfolioId(body.portfolioId), requestId = normalizeRequestId(request.headers.get("idempotency-key"));
+      await assertPortfolioAccess(id);
       const result = await withPortfolioMutation(id, () => placeOptionStrategy({ portfolioId: id, units, legs: body.legs!, orderType: enumValue(body.orderType ?? "market", ["market", "limit"] as const, "Order type"), netLimitPrice: optionalPositiveNumber(body.netLimitPrice, "Net limit price"), requestId }));
       return Response.json(result, { status: result.duplicate ? 200 : 201 });
     }

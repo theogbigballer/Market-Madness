@@ -8,19 +8,33 @@ const timestamps = {
 
 export const portfolios = sqliteTable("portfolios", {
   id: text("id").primaryKey(), name: text("name").notNull(),
+  ownerUserId: text("owner_user_id").notNull().default("local-user"),
   baseCurrency: text("base_currency").notNull().default("USD"),
   startingCapital: text("starting_capital").notNull(), benchmarkSymbol: text("benchmark_symbol"),
   advancedDerivativesEnabled: integer("advanced_derivatives_enabled", { mode: "boolean" }).notNull().default(false),
   status: text("status", { enum: ["active", "archived"] }).notNull().default("active"),
   theme: text("theme", { enum: ["light", "dark", "system"] }).notNull().default("system"),
   lastProcessedAt: text("last_processed_at").notNull().default(sql`CURRENT_TIMESTAMP`), ...timestamps,
-});
+}, (table) => [index("idx_portfolios_owner_status").on(table.ownerUserId, table.status)]);
 
 export const marketDataCredentials = sqliteTable("market_data_credentials", {
   sessionHash: text("session_hash").notNull(), provider: text("provider").notNull(),
   encryptedCredentials: text("encrypted_credentials").notNull(), iv: text("iv").notNull(),
   keyIdMasked: text("key_id_masked").notNull(), connectedAt: text("connected_at").notNull(), validatedAt: text("validated_at").notNull(),
 }, (table) => [uniqueIndex("idx_market_data_credentials_session_provider").on(table.sessionHash, table.provider)]);
+
+export const appUsers = sqliteTable("app_users", {
+  id: text("id").primaryKey(), username: text("username").notNull(), displayName: text("display_name").notNull(),
+  passwordHash: text("password_hash").notNull(), passwordSalt: text("password_salt").notNull(),
+  mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(true),
+  isAdmin: integer("is_admin", { mode: "boolean" }).notNull().default(false), active: integer("active", { mode: "boolean" }).notNull().default(true),
+  failedAttempts: integer("failed_attempts").notNull().default(0), lockedUntil: text("locked_until"), ...timestamps,
+}, (table) => [uniqueIndex("idx_app_users_username").on(table.username)]);
+
+export const appSessions = sqliteTable("app_sessions", {
+  tokenHash: text("token_hash").primaryKey(), userId: text("user_id").notNull().references(() => appUsers.id),
+  expiresAt: text("expires_at").notNull(), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_app_sessions_user_expiry").on(table.userId, table.expiresAt)]);
 
 export const allocations = sqliteTable("allocations", {
   id: text("id").primaryKey(), portfolioId: text("portfolio_id").notNull().references(() => portfolios.id),
