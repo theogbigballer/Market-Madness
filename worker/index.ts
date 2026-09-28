@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { credentialsForRequest, marketDataCredentialContext } from "../lib/market/credentials";
+import { userContext, userForRequest } from "../lib/auth/identity";
 
 interface Env {
   ASSETS: Fetcher;
@@ -42,8 +43,15 @@ const worker = {
     }
 
     if (!url.pathname.startsWith("/api/")) return handler.fetch(request, env, ctx);
+    const user = await userForRequest(request, env.DB);
+    const anonymousAuthRoute = ["/api/auth/login", "/api/auth/logout"].includes(url.pathname);
+    if (!user) {
+      if (anonymousAuthRoute) return handler.fetch(request, env, ctx);
+      return Response.json({ error: "Sign in to use Market Madness." }, { status: 401 });
+    }
+    if (user.mustChangePassword && !["/api/session", "/api/auth/password", "/api/auth/logout"].includes(url.pathname)) return Response.json({ error: "Change your temporary password to continue." }, { status: 403 });
     const credentials = await credentialsForRequest(request, env.DB);
-    return marketDataCredentialContext.run(credentials, () => handler.fetch(request, env, ctx));
+    return userContext.run(user, () => marketDataCredentialContext.run(credentials, () => handler.fetch(request, env, ctx)));
   },
 };
 

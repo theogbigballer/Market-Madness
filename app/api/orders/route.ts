@@ -5,11 +5,13 @@ import { cancelOrder, placeOrder, replaceOrderPrice } from "../../../lib/trading
 import { enumValue, optionalPositiveNumber, portfolioId as validPortfolioId, positiveNumber, requiredString } from "../../../lib/trading/validation";
 import { normalizeRequestId, withPortfolioMutation } from "../../../lib/trading/mutation";
 import { apiErrorResponse } from "../../../lib/http/api-error";
+import { assertPortfolioAccess } from "../../../lib/auth/ownership";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json() as { portfolioId?: string; symbol?: string; assetClass?: AssetClass; side?: "buy" | "sell"; orderType?: "market" | "limit" | "stop" | "stop_limit"; quantity?: number; limitPrice?: number; stopPrice?: number; timeInForce?: "day" | "gtc"; optionContract?: OptionContract; futureContract?: FutureContract; forwardContract?: ForwardContract };
     const portfolioId = validPortfolioId(body.portfolioId), requestId = normalizeRequestId(request.headers.get("idempotency-key"));
+    await assertPortfolioAccess(portfolioId);
     const result = await withPortfolioMutation(portfolioId, () => placeOrder({
       portfolioId,
       symbol: requiredString(body.symbol, "Symbol", 40),
@@ -33,6 +35,7 @@ export async function DELETE(request: Request) {
   try {
     const params = new URL(request.url).searchParams, portfolioId = params.get("portfolioId"), orderId = params.get("orderId");
     const id = validPortfolioId(portfolioId);
+    await assertPortfolioAccess(id);
     return Response.json(await withPortfolioMutation(id, () => cancelOrder(id, requiredString(orderId, "orderId", 128))));
   } catch (error) { return apiErrorResponse(error, "Unable to cancel order."); }
 }
@@ -41,6 +44,7 @@ export async function PATCH(request: Request) {
   try {
     const body = await request.json() as { portfolioId?: string; orderId?: string; limitPrice?: number; stopPrice?: number };
     const id = validPortfolioId(body.portfolioId);
+    await assertPortfolioAccess(id);
     return Response.json(await withPortfolioMutation(id, () => replaceOrderPrice(id, requiredString(body.orderId, "orderId", 128), optionalPositiveNumber(body.limitPrice, "Limit price"), optionalPositiveNumber(body.stopPrice, "Stop price"))));
   } catch (error) { return apiErrorResponse(error, "Unable to replace order."); }
 }

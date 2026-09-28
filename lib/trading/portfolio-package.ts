@@ -1,4 +1,6 @@
 import { ensureCoreSchema, getD1 } from "../../db/runtime";
+import { currentUser } from "../auth/identity";
+import { assertPortfolioAccess } from "../auth/ownership";
 
 type Row = Record<string, unknown>;
 type PackageData = Record<string, Row[]>;
@@ -6,7 +8,7 @@ export type PortfolioPackage = { format: "market-madness-portfolio"; version: 1;
 
 const portfolioTables = ["portfolio_benchmarks", "watchlist_items", "allocations", "orders", "fills", "position_lots", "lot_closures", "cash_ledger", "portfolio_snapshots", "performance_observations", "alerts", "alert_rules", "processing_events"] as const;
 const columns: Record<string, string[]> = {
-  portfolios: ["id", "name", "base_currency", "starting_capital", "benchmark_symbol", "advanced_derivatives_enabled", "status", "theme", "last_processed_at", "created_at", "updated_at"],
+  portfolios: ["id", "name", "owner_user_id", "base_currency", "starting_capital", "benchmark_symbol", "advanced_derivatives_enabled", "status", "theme", "last_processed_at", "created_at", "updated_at"],
   instruments: ["id", "symbol", "display_name", "asset_class", "currency", "exchange", "calendar_id", "multiplier", "tick_size", "underlying_instrument_id", "expiration_at", "first_notice_at", "strike", "option_right", "exercise_style", "settlement_type", "active", "created_at", "updated_at"],
   portfolio_benchmarks: ["id", "portfolio_id", "symbol", "created_at"], watchlist_items: ["id", "portfolio_id", "symbol", "asset_class", "created_at"], allocations: ["id", "portfolio_id", "bucket", "target_weight", "minimum_weight", "maximum_weight"],
   orders: ["id", "portfolio_id", "client_request_id", "instrument_id", "side", "order_type", "time_in_force", "status", "quantity", "filled_quantity", "limit_price", "stop_price", "scheduled_for", "rejection_reason", "reconstruction_status", "submitted_at", "created_at", "updated_at"],
@@ -20,7 +22,9 @@ async function rows(sql: string, ...bindings: unknown[]) { return (await getD1()
 
 export async function exportPortfolioPackage(portfolioId: string): Promise<PortfolioPackage> {
   await ensureCoreSchema();
+  await assertPortfolioAccess(portfolioId);
   const portfolio = await rows("SELECT * FROM portfolios WHERE id = ?", portfolioId); if (!portfolio.length) throw new Error("Portfolio not found.");
+  delete portfolio[0].owner_user_id;
   const data: PackageData = { portfolios: portfolio, instruments: await rows("SELECT * FROM instruments") };
   for (const table of portfolioTables) data[table] = await rows(`SELECT * FROM ${table} WHERE portfolio_id = ?`, portfolioId);
   data.order_legs = await rows("SELECT ol.* FROM order_legs ol JOIN orders o ON o.id = ol.order_id WHERE o.portfolio_id = ?", portfolioId);
@@ -67,7 +71,7 @@ export async function importPortfolioPackage(pkg: PortfolioPackage) {
   (source.fills || []).forEach((row) => fillMap.set(String(row.id), crypto.randomUUID()));
   (source.position_lots || []).forEach((row) => lotMap.set(String(row.id), crypto.randomUUID()));
   await insert("instruments", source.instruments || [], true);
-  await insert("portfolios", [remap(oldPortfolio, { id: portfolioId, name: `${String(oldPortfolio.name)} (Imported)`, status: "active", last_processed_at: now, created_at: now, updated_at: now })]);
+  await insert("portfolios", [remap(oldPortfolio, { id: portfolioId, owner_user_id: currentUser().id, name: `${String(oldPortfolio.name)} (Imported)`, status: "active", last_processed_at: now, created_at: now, updated_at: now })]);
   const simple = ["portfolio_benchmarks", "watchlist_items", "allocations", "portfolio_snapshots", "performance_observations", "alerts", "alert_rules"];
   for (const table of simple) await insert(table, (source[table] || []).map((row) => remap(row, { id: crypto.randomUUID(), portfolio_id: portfolioId })));
   await insert("orders", (source.orders || []).map((row) => remap(row, { id: orderMap.get(String(row.id)), portfolio_id: portfolioId, client_request_id: null })));

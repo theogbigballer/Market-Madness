@@ -28,6 +28,15 @@ async function api(path, options = {}) {
   return { response, body: await response.json() };
 }
 
+async function hostedApi(path, options = {}) {
+  const response = await worker.fetch(new Request(`https://market-madness.example${path}`, {
+    method: options.method || "GET",
+    headers: { ...(options.body === undefined ? {} : { "content-type": "application/json" }), ...(options.headers || {}) },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  }), { DB: database, ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } }, { waitUntil() {}, passThroughOnException() {} });
+  return { response, body: await response.json() };
+}
+
 test("portfolio, cash, order, fill, and position APIs complete a database-backed workflow", async () => {
   const created = await api("/api/portfolios", { method: "POST", body: { name: "Integration Portfolio", startingCapital: 500_000, advancedDerivativesEnabled: true, theme: "dark" } });
   assert.equal(created.response.status, 201);
@@ -69,6 +78,38 @@ test("portfolio, cash, order, fill, and position APIs complete a database-backed
   assert.equal(restored.body.account.cash, dashboard.body.account.cash);
   assert.equal(restored.body.positions[0].quantity, dashboard.body.positions[0].quantity);
   assert.equal(restored.body.orders.length, dashboard.body.orders.length);
+});
+
+test("unapproved ChatGPT users cannot access the hosted application", async () => {
+  const aliceHeaders = { "oai-authenticated-user-id": "user-alice", "oai-authenticated-user-email": "alice@example.com" };
+  const rejected = await hostedApi("/api/portfolios", { headers: aliceHeaders });
+  assert.equal(rejected.response.status, 401);
+  assert.match(rejected.body.error, /sign in/i);
+});
+
+test("credential users must sign in and change temporary passwords before trading", async () => {
+  const anonymous = await hostedApi("/api/portfolios");
+  assert.equal(anonymous.response.status, 401);
+
+  const ownerHeaders = { "oai-authenticated-user-id": "owner-user", "oai-authenticated-user-email": "samxstevenson@gmail.com" };
+  const createdUser = await hostedApi("/api/auth/users", { method: "POST", headers: ownerHeaders, body: { username: "friendtest", displayName: "Friend Test", temporaryPassword: "Temporary1234" } });
+  assert.equal(createdUser.response.status, 201, JSON.stringify(createdUser.body));
+
+  const rejected = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "wrong-password" } });
+  assert.equal(rejected.response.status, 401);
+  const login = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "Temporary1234" } });
+  assert.equal(login.response.status, 200, JSON.stringify(login.body));
+  const cookie = login.response.headers.get("set-cookie").split(";")[0];
+  assert.equal(login.body.user.mustChangePassword, true);
+
+  const blocked = await hostedApi("/api/portfolios", { headers: { cookie } });
+  assert.equal(blocked.response.status, 403);
+  const changed = await hostedApi("/api/auth/password", { method: "POST", headers: { cookie }, body: { password: "Permanent5678" } });
+  assert.equal(changed.response.status, 200, JSON.stringify(changed.body));
+  const portfolio = await hostedApi("/api/portfolios", { method: "POST", headers: { cookie }, body: { name: "Private Friend Portfolio", startingCapital: 10_000, theme: "dark" } });
+  assert.equal(portfolio.response.status, 201, JSON.stringify(portfolio.body));
+  const ownerList = await hostedApi("/api/portfolios", { headers: ownerHeaders });
+  assert.equal(ownerList.body.portfolios.some((item) => item.id === portfolio.body.id), false);
 });
 
 test("invalid API values are rejected before they mutate the database", async () => {

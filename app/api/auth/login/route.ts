@@ -1,0 +1,3 @@
+import { getD1 } from "../../../../db/runtime";
+import { loginWithPassword } from "../../../../lib/auth/identity";
+export async function POST(request: Request) { try { const body = await request.json() as { username?: string; password?: string }; const result = await loginWithPassword(request, getD1(), body.username || "", body.password || ""); return Response.json({ user: result.user }, { headers: { "set-cookie": result.cookie, "cache-control": "no-store" } }); } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to sign in." }, { status: 401 }); } }
