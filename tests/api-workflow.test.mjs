@@ -92,12 +92,12 @@ test("credential users must sign in and change temporary passwords before tradin
   assert.equal(anonymous.response.status, 401);
 
   const ownerHeaders = { "oai-authenticated-user-id": "owner-user", "oai-authenticated-user-email": "samxstevenson@gmail.com" };
-  const createdUser = await hostedApi("/api/auth/users", { method: "POST", headers: ownerHeaders, body: { username: "friendtest", displayName: "Friend Test", temporaryPassword: "Temporary1234" } });
+  const createdUser = await hostedApi("/api/auth/users", { method: "POST", headers: ownerHeaders, body: { username: "friendtest", displayName: "Friend Test", temporaryPassword: "a" } });
   assert.equal(createdUser.response.status, 201, JSON.stringify(createdUser.body));
 
   const rejected = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "wrong-password" } });
   assert.equal(rejected.response.status, 401);
-  const login = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "Temporary1234" } });
+  const login = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "a" } });
   assert.equal(login.response.status, 200, JSON.stringify(login.body));
   const cookie = login.response.headers.get("set-cookie").split(";")[0];
   assert.equal(login.body.user.mustChangePassword, true);
