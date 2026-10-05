@@ -94,6 +94,11 @@ test("credential users must sign in and change temporary passwords before tradin
   const ownerHeaders = { "oai-authenticated-user-id": "owner-user", "oai-authenticated-user-email": "samxstevenson@gmail.com" };
   const createdUser = await hostedApi("/api/auth/users", { method: "POST", headers: ownerHeaders, body: { username: "friendtest", displayName: "Friend Test", temporaryPassword: "a" } });
   assert.equal(createdUser.response.status, 201, JSON.stringify(createdUser.body));
+  const duplicateUser = await hostedApi("/api/auth/users", { method: "POST", headers: ownerHeaders, body: { username: "friendtest", displayName: "Duplicate Friend", temporaryPassword: "b" } });
+  assert.equal(duplicateUser.response.status, 400);
+  assert.match(duplicateUser.body.error, /already approved/i);
+  const approvedUsers = await hostedApi("/api/auth/users", { headers: ownerHeaders });
+  assert.equal(approvedUsers.body.users.some((user) => user.username === "friendtest"), true);
 
   const rejected = await hostedApi("/api/auth/login", { method: "POST", body: { username: "friendtest", password: "wrong-password" } });
   assert.equal(rejected.response.status, 401);
