@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type AppUser = { id: string; email: string | null; username: string; displayName: string; isLocal: boolean; isAdmin: boolean; mustChangePassword: boolean };
 type CredentialUserRow = { id: string; username: string; display_name: string; password_hash: string; password_salt: string; must_change_password: number; is_admin: number; active: number; failed_attempts: number; locked_until: string | null };
 
-const OWNER_EMAIL = "samxstevenson@gmail.com", SESSION_COOKIE = "mm_auth_session", SESSION_DAYS = 7, PBKDF2_ITERATIONS = 210_000;
+const OWNER_EMAIL = "samxstevenson@gmail.com", SESSION_COOKIE = "mm_auth_session", SESSION_DAYS = 7, PBKDF2_ITERATIONS = 100_000;
 const authSchemaReady = new WeakMap<object, Promise<void>>();
 const localUser: AppUser = { id: "local-user", email: OWNER_EMAIL, username: "local", displayName: "Local owner", isLocal: true, isAdmin: true, mustChangePassword: false };
 export const userContext = new AsyncLocalStorage<AppUser>();
